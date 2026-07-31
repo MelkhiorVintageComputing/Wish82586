@@ -151,7 +151,12 @@ def build(args):
         "-boot", "d",
         "-nographic",
         "-serial", "mon:stdio",
-        "-net", "none",
+        # boot-com.iso is a boot image and carries no sets, and NetBSD
+        # publishes no full ISO for 10.1, so they come over the network.  An
+        # e1000 is what NetBSD calls wm0; slirp gives it a private network with
+        # a gateway out, and needs nothing of the host.
+        "-netdev", "user,id=net0",
+        "-device", "e1000,netdev=net0",
     ]
     print("== booting the installer")
     print("   " + " ".join(cmd))
@@ -192,6 +197,22 @@ def run_sysinst(con, args):
     def enter(text):
         con.line()
 
+    def pick_or_enter(label):
+        """Answers a menu if it is one, otherwise takes the prompt's default.
+
+        The network questions are a mixture: some are menus with lettered
+        entries, some are plain prompts with the answer already in brackets.
+        """
+        def act(text):
+            letter = con.letter_for(label, text)
+            if letter is None:
+                print("        (default)")
+                con.line()
+            else:
+                print("        %s -> %s" % (label, letter))
+                con.line(letter)
+        return act
+
     def exit_installer(text):
         # "Exit Install System" is also on the main menu, so it only means the
         # end once the sets have actually gone in.
@@ -225,12 +246,36 @@ def run_sysinst(con, args):
         ("Partition sizes ok",               pick("Partition sizes ok")),
         ("name for your NetBSD disk",        enter),
         (want_sets,                          pick(want_sets)),
+        # Where the sets come from.  FTP before CD-ROM: both are on the same
+        # menu, and the CD has nothing to offer.
+        (r"[a-z]:\s*FTP",                    pick("FTP")),
+        (r"[a-z]:\s*Get Distribution",       pick("Get Distribution")),
+        # Bringing the interface up.  With slirp, autoconfiguration answers
+        # every one of these.
+        (r"[a-z]:\s*wm0",                    pick("wm0")),
+        # Everything slirp needs is either autoconfigured or already in the
+        # brackets, so these are all "take the default".
+        ("Network media type",               enter),
+        ("Perform autoconfiguration",        pick_or_enter("Yes")),
+        ("Your host name",                   enter),
+        ("Your DNS domain",                  enter),
+        ("IPv4 gateway",                     enter),
+        ("IPv4 name server",                 enter),
+        ("Are they OK",                      pick_or_enter("Yes")),
         ("CD-ROM",                           pick("CD-ROM")),
         ("Hit enter to continue",            extracted),
+        # An empty root password: this is a disposable test machine that
+        # exists to run one driver, and a password would only be one more
+        # thing for the boot script to type.
+        ("New password",                     enter),
+        ("Retype new password",              enter),
         ("Finished configuring",             pick("Finished configuring")),
         ("Configure network",                pick("Finished configuring")),
         ("Install NetBSD to hard disk",      pick("Install NetBSD to hard disk")),
         ("Exit Install System",              exit_installer),
+        # A fresh VM has no entropy to speak of and this machine is not going
+        # to be generating ssh host keys anyone depends on.
+        ("Not now, continue",                pick("Not now, continue")),
         (r"[a-z]:\s*Continue",               pick("Continue")),
         (r"[a-z]:\s*Yes",                    pick("Yes")),
     ]
@@ -238,8 +283,10 @@ def run_sysinst(con, args):
     seen = {}
     spent = set()          # rows that have had their turn
     pending = None         # a row that has been answered and must go away
+    pending_at = 0.0
     quiet_since = time.time()
-    for step in range(600):
+    step = 0
+    while step < 300:
         text = con.settled()
         # Wait for the question just answered to leave the screen before
         # answering anything else.  Comparing whole screens is not enough:
@@ -250,7 +297,12 @@ def run_sysinst(con, args):
         # following menu, where it meant "set the geometry by hand", and the
         # install ended up in a prompt asking for a sector count.
         if pending is not None:
-            if re.search(table[pending][0], text, re.M):
+            # ... but not for ever.  A prompt's text stays on screen when the
+            # next menu opens under it, so waiting for it to disappear would
+            # wait for good.  A few seconds is long enough for a keystroke to
+            # take effect, which is all this is protecting against.
+            if (re.search(table[pending][0], text, re.M)
+                    and time.time() - pending_at < 8):
                 continue
             pending = None
         hit = None
@@ -280,11 +332,16 @@ def run_sysinst(con, args):
             raise SystemExit("stuck on %r:\n%s" % (name, con.dump()))
         print("   [%2d] %s" % (step, name))
         table[hit][1](text)
-        pending = hit
+        pending, pending_at = hit, time.time()
+        # Only answers count against the budget.  Waiting through a download
+        # is not progress, but it is not going round in circles either, and
+        # the stall timeout is what catches that.
+        step += 1
         if state["done"]:
             break
     else:
-        raise SystemExit("the installer never finished:\n" + con.dump())
+        raise SystemExit("answered %d screens without finishing:\n%s"
+                         % (step, con.dump()))
 
     print("== waiting for a shell")
     for _ in range(60):
