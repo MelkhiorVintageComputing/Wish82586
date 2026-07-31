@@ -16,6 +16,7 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -70,7 +71,13 @@ def build(args):
             sys.exit("%s exists; pass --force to rebuild it" % image)
         os.unlink(image)
 
-    qemu_img = args.qemu_img or "qemu-img"
+    # Our QEMU is built with --disable-tools, since building them costs time
+    # and the image format is not what is under test.  Any qemu-img will do.
+    qemu_img = args.qemu_img
+    if not qemu_img or not os.path.exists(qemu_img):
+        qemu_img = shutil.which("qemu-img")
+    if not qemu_img:
+        sys.exit("no qemu-img anywhere; install qemu-utils or build with tools")
     subprocess.check_call([qemu_img, "create", "-f", "qcow2", image, args.size],
                           stdout=subprocess.DEVNULL)
 
@@ -131,13 +138,20 @@ def run_sysinst(inst, args):
     inst.wait([br"Available disks", br"a: wd0"], what="the disk list")
     inst.line("a")
 
-    # Some releases ask which of MBR or GPT; take the default if asked.
-    idx = inst.wait([br"a: This is the correct geometry",
-                     br"a: Use the entire disk",
-                     br"Do you want to install NetBSD"], timeout=120,
-                    what="the geometry or whole disk question")
+    # An unpartitioned disk brings up the scheme menu first.  MBR, not GPT:
+    # this is a PC BIOS boot with NetBSD's traditional bootcode, which is the
+    # combination least likely to surprise anyone.
+    idx = inst.wait([br"partitioning scheme",
+                     br"a: This is the correct geometry",
+                     br"a: Use the entire disk"], timeout=180,
+                    what="the partitioning scheme, geometry or whole disk question")
     if idx == 0:
-        inst.line("a")
+        inst.line("b")          # b: Master Boot Record
+        idx = inst.wait([br"a: This is the correct geometry",
+                         br"a: Use the entire disk"], timeout=180,
+                        what="the geometry or whole disk question") + 1
+    if idx == 1:
+        inst.line("a")          # the geometry is whatever QEMU says it is
         inst.wait(br"a: Use the entire disk", what="the whole disk question")
     inst.line("a")
 
