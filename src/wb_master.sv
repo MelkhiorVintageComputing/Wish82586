@@ -7,13 +7,19 @@
 // access at a time into a bus cycle on the 32-bit Wishbone port, picking the
 // byte lanes and shifting the data into and out of the right half of the word.
 //
+// Wishbone is word addressed: ADR_O carries the index of a 32-bit word, not a
+// byte address, and which bytes of that word are meant is said entirely by
+// SEL_O.  So the bottom two bits of the internal byte address never reach the
+// bus - they choose byte lanes instead.  WB_ADDR_W is therefore 30 for a
+// four gigabyte range, not 32.
+//
 // Protocol on the internal port: hold req_i with the address and data until
 // ack_o pulses for one cycle.  Reads present their data with that pulse.
 // 16-bit accesses are expected to be even-aligned, as they are on the real
 // part; an odd address is treated as if bit 0 were zero.
 
 module wb_master #(
-    parameter int WB_ADDR_W = 32,
+    parameter int WB_ADDR_W = 30,
     parameter int WB_DATA_W = 32
 ) (
     input  logic                   clk,
@@ -34,7 +40,7 @@ module wb_master #(
     output logic                   wbm_stb_o,
     output logic                   wbm_we_o,
     output logic [WB_DATA_W/8-1:0] wbm_sel_o,
-    output logic [WB_ADDR_W-1:0]   wbm_adr_o,
+    output logic [WB_ADDR_W-1:0]   wbm_adr_o,   // word address
     output logic [WB_DATA_W-1:0]   wbm_dat_o,
     input  logic [WB_DATA_W-1:0]   wbm_dat_i,
     input  logic                   wbm_ack_i,
@@ -44,6 +50,8 @@ module wb_master #(
   initial begin
     if (WB_DATA_W != 32)
       $fatal(1, "wb_master: the master port is 32 bits wide; put a width adapter in the fabric");
+    if (WB_ADDR_W < 22)
+      $fatal(1, "wb_master: WB_ADDR_W must carry the 22 word address bits of a 24-bit space");
   end
 
   // Byte lanes and data placement for the access being presented.
@@ -94,7 +102,7 @@ module wb_master #(
           // ack_o still high means the previous access is only just finishing;
           // the requester has not had a chance to drop req_i yet.
           if (req_i && !ack_o) begin
-            wbm_adr_o <= {{(WB_ADDR_W-24){1'b0}}, addr_i[23:2], 2'b00};
+            wbm_adr_o <= {{(WB_ADDR_W-22){1'b0}}, addr_i[23:2]};
             wbm_we_o  <= we_i;
             wbm_sel_o <= sel_next;
             wbm_dat_o <= dat_next;

@@ -93,6 +93,14 @@ FIFO word is `{end, err[2:0], data[7:0]}`: data words carry frame bytes, and a
 single end word closes the frame and reports a bad FCS, a dribble nibble or an
 overrun.
 
+Wishbone is **word addressed**: `ADR` is a word index, `SEL` alone picks bytes,
+and a 32-bit port over a four gigabyte range has 30 address lines.  `wb_master`
+converts at the pin, and so do the testbench bus models - everything inside the
+core, the access log and the tests is in byte addresses, because that is how
+the 82586's structures are defined.  `infra_wishbone_is_word_addressed` checks
+the pin rather than the model, since comparing the two sides of a converter
+proves nothing.
+
 Blocks reach memory through `wb_master`'s internal port: hold `req_i` with the
 address until `ack_o` pulses for one cycle.  `ie_core` drives it from a
 combinational request decode plus a sequential state machine - follow that

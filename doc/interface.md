@@ -14,10 +14,22 @@ MII brings its own clocks (`mii_tx_clk`, `mii_rx_clk`, 25 MHz at 100 Mb/s).
 They are asynchronous to `clk` and to each other; the testbench deliberately
 skews them so the design cannot assume otherwise.
 
+## Addressing
+
+Wishbone is word addressed.  `ADR` carries the index of a data-bus-wide word,
+not a byte address, and which bytes of that word are meant is said entirely by
+`SEL`.  The bottom two bits of a byte address are therefore not on the bus at
+all: a 32-bit data port covering a four gigabyte range has **30** address
+lines, not 32.
+
+Both ports follow that.  The register map and the memory offsets below are
+written in byte terms, because that is how the 82586's structures and its
+drivers are defined; divide by four to get what travels on `ADR`.
+
 ## Wishbone B4 classic slave - control registers
 
-8-bit address, 32-bit data, byte selects honoured.  `ACK_O` comes back the
-cycle after the request; `ERR_O` is never asserted.
+6-bit address (a register index), 32-bit data, byte selects honoured.
+`ACK_O` comes back the cycle after the request; `ERR_O` is never asserted.
 
 | offset | name       | access | contents                                            |
 |--------|------------|--------|-----------------------------------------------------|
@@ -39,8 +51,8 @@ Unmapped addresses read as zero and swallow writes.
 
 ## Wishbone B4 classic master - shared memory
 
-32-bit address, 32-bit data, `SEL_O` for byte lanes, classic (non-pipelined)
-cycles.  The core is the only master modelled; the testbench memory answers
+30-bit word address, 32-bit data, `SEL_O` for byte lanes, classic
+(non-pipelined) cycles.  The core is the only master modelled; the testbench memory answers
 with a configurable number of wait states and can be made to return `ERR_I` in
 a chosen address window.
 
@@ -48,6 +60,9 @@ The 82586 view of memory is little endian: 16-bit control fields, 24-bit
 buffer addresses, control blocks addressed as 16-bit offsets from CBBASE.  How
 that maps onto 32-bit bus cycles is up to the core; the testbench only checks
 the resulting memory contents and that no access lands outside the model.
+
+`WB_ADDR_W` is the number of word address lines and defaults to 30; the core
+uses the bottom 22 of them, which is the 24-bit space the 82586 can reach.
 
 The master port is 32 bits wide and stays that way.  A host that needs a
 narrower bus is served by a width adapter in the Wishbone fabric, which is

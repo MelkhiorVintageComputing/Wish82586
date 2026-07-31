@@ -8,6 +8,10 @@
 // (fixed at 0xFFFFF6 on the real part, programmable here).
 //
 // Register map (byte offsets, 32-bit accesses):
+// The bus is word addressed, so wbs_adr_i is a register index, not a byte
+// offset.  The map below is written in byte offsets because that is how a
+// driver sees it; the index is the offset divided by four.
+//
 //   0x00 CTRL     [0] RST (level, 1 = core held in reset, 1 after power-up)
 //                 [1] CA  (write 1 to pulse channel attention, reads 0)
 //                 [8] IRQ_EN
@@ -24,9 +28,7 @@ module wb_csr (
     input  logic        wbs_stb_i,
     input  logic        wbs_we_i,
     input  logic [3:0]  wbs_sel_i,
-    /* verilator lint_off UNUSEDSIGNAL */
-    input  logic [7:0]  wbs_adr_i,   // registers are 32 bits, adr[1:0] is ignored
-    /* verilator lint_on UNUSEDSIGNAL */
+    input  logic [5:0]  wbs_adr_i,   // word address: register index
     input  logic [31:0] wbs_dat_i,
     output logic [31:0] wbs_dat_o,
     output logic        wbs_ack_o,
@@ -62,7 +64,7 @@ module wb_csr (
     end else begin
       ca_o <= 1'b0;
       if (wr) begin
-        case (wbs_adr_i[7:2])
+        case (wbs_adr_i)
           wish82586_pkg::CSR_CTRL[7:2]: begin
             if (byte0) begin
               rst_q <= wbs_dat_i[wish82586_pkg::CTRL_RST_BIT];
@@ -84,7 +86,7 @@ module wb_csr (
 
   always_comb begin
     wbs_dat_o = 32'h0;
-    case (wbs_adr_i[7:2])
+    case (wbs_adr_i)
       wish82586_pkg::CSR_CTRL[7:2]: begin
         wbs_dat_o[wish82586_pkg::CTRL_RST_BIT]    = rst_q;
         wbs_dat_o[wish82586_pkg::CTRL_IRQ_EN_BIT] = irq_en_q;

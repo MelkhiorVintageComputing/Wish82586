@@ -12,7 +12,7 @@
 
 module wish82586 #(
     parameter int WB_DATA_W = 32,   // fixed at 32, see doc/interface.md
-    parameter int WB_ADDR_W = 32
+    parameter int WB_ADDR_W = 30   // word address lines, see doc/interface.md
 ) (
     input  logic                   clk,
     input  logic                   rst,          // Wishbone RST_I: synchronous, active high
@@ -22,7 +22,7 @@ module wish82586 #(
     input  logic                   wbs_stb_i,
     input  logic                   wbs_we_i,
     input  logic [3:0]             wbs_sel_i,
-    input  logic [7:0]             wbs_adr_i,
+    input  logic [5:0]             wbs_adr_i,   // word address
     input  logic [31:0]            wbs_dat_i,
     output logic [31:0]            wbs_dat_o,
     output logic                   wbs_ack_o,
@@ -33,7 +33,7 @@ module wish82586 #(
     output logic                   wbm_stb_o,
     output logic                   wbm_we_o,
     output logic [WB_DATA_W/8-1:0] wbm_sel_o,
-    output logic [WB_ADDR_W-1:0]   wbm_adr_o,
+    output logic [WB_ADDR_W-1:0]   wbm_adr_o,   // word address
     output logic [WB_DATA_W-1:0]   wbm_dat_o,
     input  logic [WB_DATA_W-1:0]   wbm_dat_i,
     input  logic                   wbm_ack_i,

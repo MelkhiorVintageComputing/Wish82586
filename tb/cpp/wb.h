@@ -12,6 +12,11 @@
 // Both attach to the negative edge of the bus clock: they see the values the
 // DUT drove at the preceding rising edge and set up whatever the DUT will
 // sample at the next one.
+//
+// Wishbone is word addressed, so what travels on ADR is the index of a 32-bit
+// word and SEL alone says which bytes are meant.  The models convert at the
+// pin: their interfaces, the access log and everything a test writes are in
+// byte addresses, which is how the 82586 and its drivers think.
 
 #pragma once
 
@@ -30,7 +35,7 @@ struct WbSlavePorts {
   uint8_t* stb = nullptr;
   uint8_t* we = nullptr;
   uint8_t* sel = nullptr;
-  uint32_t* adr = nullptr;
+  uint32_t* adr = nullptr;    // word address as driven by the master
   uint32_t* dat_w = nullptr;  // master -> slave
   uint32_t* dat_r = nullptr;  // slave -> master (driven by the model)
   uint8_t* ack = nullptr;     // driven by the model
@@ -43,7 +48,7 @@ struct WbMasterPorts {
   uint8_t* stb = nullptr;  // driven by the model
   uint8_t* we = nullptr;   // driven by the model
   uint8_t* sel = nullptr;  // driven by the model
-  uint32_t* adr = nullptr; // driven by the model
+  uint32_t* adr = nullptr; // word address, driven by the model
   uint32_t* dat_w = nullptr;  // master -> slave, driven by the model
   uint32_t* dat_r = nullptr;  // slave -> master
   uint8_t* ack = nullptr;
@@ -55,7 +60,7 @@ class WbMem {
   struct Access {
     u64 time_ps;
     bool write;
-    uint32_t adr;
+    uint32_t adr;     // byte address, converted from the word address on ADR
     uint32_t data;
     uint8_t sel;
   };

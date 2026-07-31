@@ -91,7 +91,8 @@ void WbMem::tick() {
     return;
   }
 
-  const uint32_t adr = *p_.adr & ~uint32_t(3);  // 32-bit port, byte address
+  // ADR carries a word index; the byte address is what everything else uses.
+  const uint32_t adr = *p_.adr << 2;
   const uint8_t sel = *p_.sel & 0xf;
   const bool write = *p_.we != 0;
 
@@ -148,7 +149,7 @@ void WbHost::tick() {
       *p_.stb = 1;
       *p_.we = write_ ? 1 : 0;
       *p_.sel = sel_;
-      *p_.adr = adr_;
+      *p_.adr = adr_ >> 2;      // the bus carries a word address
       *p_.dat_w = wdata_;
       st_ = St::Wait;
       break;

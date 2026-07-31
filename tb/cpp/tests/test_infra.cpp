@@ -322,4 +322,46 @@ TEST(infra_mem_image_receive_area) {
   CHECK_EQ(img.collect_rx().size(), size_t(0));
 }
 
+
+TEST(infra_wishbone_is_word_addressed) {
+  // Wishbone carries a word index on ADR, never a byte address: the bottom two
+  // bits of a byte address are not on the bus at all, and SEL alone says which
+  // bytes of the word are meant.  Checking the pin rather than the model is
+  // the point - the model converts, so comparing the two sides of it would
+  // prove nothing.
+  Vtb_top* d = env.dut();
+  std::vector<uint32_t> pins;
+  bool prev_stb = false;
+  // One record per strobe, caught on its rising edge: the memory model's own
+  // callback has already answered by the time this one runs, so anything that
+  // looked at ack would see every cycle already acknowledged.
+  env.sim().on_negedge(env.sysclk(), [&]() {
+    const bool stb = d->dut_wbm_cyc_o && d->dut_wbm_stb_o;
+    if (stb && !prev_stb) pins.push_back(d->dut_wbm_adr_o);
+    prev_stb = stb;
+  });
+
+  CHECK_DRV(env.drv().init());
+
+  const std::vector<WbMem::Access>& log = env.mem().log();
+  CHECK_MSG(!log.empty(), "the chip made no bus accesses to look at");
+
+  // Every access the model saw, in byte terms, must be that word index times
+  // four.  The SCP lives at 0x0ffff6, whose word index is odd, so a byte
+  // address on the bus would not survive this.
+  size_t checked = 0;
+  for (size_t i = 0; i < log.size() && i < pins.size(); i++) {
+    CHECK_EQ(pins[i], log[i].adr >> 2);
+    CHECK_MSG((log[i].adr & 3u) == 0, "the model logged an unaligned word");
+    checked++;
+  }
+  CHECK_MSG(checked >= 4, "not enough accesses to be sure");
+
+  bool saw_odd_word = false;
+  for (uint32_t w : pins)
+    if (w & 1u) saw_odd_word = true;
+  CHECK_MSG(saw_odd_word,
+            "no access landed on an odd word, so this proves nothing");
+}
+
 }  // namespace wtb
