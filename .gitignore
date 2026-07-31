@@ -3,3 +3,4 @@ build/
 *.vcd
 *.fst
 .claude/*.tmp.*
+work/
