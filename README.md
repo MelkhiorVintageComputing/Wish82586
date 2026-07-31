@@ -33,15 +33,15 @@ the two approximations noted below.
 | TDR and DIAGNOSE commands                 | done, tested               |
 | DUMP command                              | reports failure            |
 | GMII, transmit and receive                | done, tested               |
-| word-wide DMA on the receive path         | done, tested               |
+| word-wide DMA, both directions            | done, tested               |
 
 Everything the reference drivers do on a normal bring-up now works, and
 `sys_netbsd_style_bring_up` walks that sequence end to end.  Both interfaces work at line rate; gigabit wants the Wishbone clock at
 125 MHz, which `doc/interface.md` works through.  Two things are deliberate
 approximations, both marked TODO in the RTL: the collision backoff uses an
-LFSR rather than true truncated binary exponential backoff, and the command
-unit still reads transmit data a byte per bus cycle, which costs staging
-latency but nothing else.
+LFSR rather than true truncated binary exponential backoff, and the receive
+unit fetches the next buffer descriptor only once it needs it rather than
+prefetching, which is what the receive FIFO depth covers for.
 
 Tests for work not yet done are written up front and marked pending, so the
 pending count is the todo list; it is currently empty.

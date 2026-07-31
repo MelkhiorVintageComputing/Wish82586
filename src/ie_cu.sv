@@ -21,8 +21,15 @@
 // "no fault found", which is the accurate answer for this hardware.  Cable
 // and link state belong to the PHY and are read over MDIO.
 //
-// TRANSMIT copies the buffer chain into the staging RAM a byte at a time and
-// then hands it to mii_tx, which owns deferral, padding, the FCS and the retry
+// TRANSMIT copies the buffer chain into the staging RAM and then hands it to
+// mii_tx.  It reads whole words wherever the buffer allows - bytes only for an
+// unaligned start or a short tail - so a full frame costs a quarter of the bus
+// transactions it used to.  Staging has no real time constraint, unlike the
+// receive side, so this is bus traffic and latency rather than a limit; it is
+// worth doing because the bus is shared with the receive unit, which does have
+// one.
+//
+// It hands the staged frame to mii_tx, which owns deferral, padding, the FCS and the retry
 // loop.  Staging the whole frame first is what lets a collision be retried
 // without going back to host memory, and it is also what makes AL-LOC = 0
 // cost nothing extra: the header is simply staged ahead of the payload, so
@@ -111,7 +118,10 @@ module ie_cu (
     CU_TX_RD_CNT,
     CU_TX_RD_BUF_LO,
     CU_TX_RD_BUF_HI,
+    CU_TX_SEL,
     CU_TX_RD_BYTE,
+    CU_TX_RD_WORD,
+    CU_TX_ST_WORD,
     CU_TX_NEXT_TBD,
     CU_TX_GO,
     CU_TX_LB_PAD,
@@ -149,6 +159,8 @@ module ie_cu (
 
   // Multicast setup.  The command gives a byte count, six bytes per address;
   // only as many as the receive unit can hold are fetched.
+  logic [31:0] tx_word;        // the four bytes last read from a buffer
+  logic [1:0]  tx_st;          // which of them is going into the RAM
   logic [15:0] mc_off;         // byte offset of the address being read
   logic [3:0]  mc_left;        // addresses still to fetch
 
@@ -163,6 +175,13 @@ module ie_cu (
                      (mc_bytes >= 16'd6)  ? 4'd1 : 4'd0;
 
   wire [23:0] cb_addr = cbbase_i + {8'h00, cb_off};
+
+  // Where the next transmit byte comes from, and whether a whole word of it
+  // can be taken in one go.
+  wire [23:0] tx_addr     = tbd_buf + {10'h0, tbd_off};
+  wire [13:0] tbd_left    = tbd_count - tbd_off;
+  wire        tx_buf_done = (tbd_off >= tbd_count);
+  wire        can_word    = (tbd_left >= 14'd4) && (tx_addr[1:0] == 2'b00);
   wire [2:0]  opcode  = cmd[2:0];
 
   // Words of CONFIGURE parameters to fetch, from the byte count in byte 0.
@@ -232,7 +251,13 @@ module ie_cu (
       CU_TX_RD_BYTE: begin
         bus_req_o  = !(lb_enable_i && lb_full_i);
         bus_size_o = wish82586_pkg::BUS_SZ_BYTE;
-        bus_addr_o = tbd_buf + {10'h0, tbd_off};
+        bus_addr_o = tx_addr;
+      end
+      CU_TX_RD_WORD: begin
+        bus_req_o  = 1'b1;
+        bus_size_o = wish82586_pkg::BUS_SZ_WORD;
+        bus_sel_o  = 4'hf;
+        bus_addr_o = tx_addr;
       end
       CU_TX_NEXT_TBD: begin
         bus_req_o  = 1'b1;
@@ -284,6 +309,8 @@ module ie_cu (
       tbd_eof         <= 1'b0;
       tbd_buf         <= 24'h0;
       tbd_off         <= 14'h0;
+      tx_word         <= 32'h0;
+      tx_st           <= 2'd0;
       tx_bytes        <= 16'h0;
       tx_status       <= 16'h0;
       tx_done_s1      <= 1'b0;
@@ -510,26 +537,50 @@ module ie_cu (
         CU_TX_RD_BUF_HI:
           if (bus_ack_i) begin
             tbd_buf[23:16] <= rdata[7:0];
-            state          <= (tbd_count == 14'h0) ?
-                              (tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD) : CU_TX_RD_BYTE;
+            state          <= CU_TX_SEL;
           end
+
+        // Take a whole word where the buffer allows it, a byte otherwise.
+        CU_TX_SEL:
+          if (tx_buf_done)   state <= tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD;
+          else if (can_word) state <= CU_TX_RD_WORD;
+          else               state <= CU_TX_RD_BYTE;
 
         CU_TX_RD_BYTE:
           if (bus_ack_i) begin
-            // TODO: a byte a cycle is simple but slow; the bus is 32 bits wide.
             tx_ram_we_o   <= 1'b1;
             tx_ram_addr_o <= tx_bytes[10:0];
             tx_ram_data_o <= rdata[7:0];
             tx_bytes      <= tx_bytes + 16'd1;
+            tbd_off       <= tbd_off + 14'd1;
             if (lb_enable_i) begin
               lb_wr_o   <= 1'b1;
               lb_data_o <= {4'h0, rdata[7:0]};
             end
-            if (tbd_off + 14'd1 >= tbd_count) begin
-              state <= tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD;
-            end else begin
-              tbd_off <= tbd_off + 14'd1;
+            state <= CU_TX_SEL;
+          end
+
+        CU_TX_RD_WORD:
+          if (bus_ack_i) begin
+            tx_word <= bus_rdata_i;
+            tx_st   <= 2'd0;
+            state   <= CU_TX_ST_WORD;
+          end
+
+        // The staging RAM takes a byte a cycle, so the word goes in over four.
+        CU_TX_ST_WORD:
+          if (!(lb_enable_i && lb_full_i)) begin
+            tx_ram_we_o   <= 1'b1;
+            tx_ram_addr_o <= tx_bytes[10:0];
+            tx_ram_data_o <= tx_word[{tx_st, 3'b000} +: 8];
+            tx_bytes      <= tx_bytes + 16'd1;
+            tbd_off       <= tbd_off + 14'd1;
+            if (lb_enable_i) begin
+              lb_wr_o   <= 1'b1;
+              lb_data_o <= {4'h0, tx_word[{tx_st, 3'b000} +: 8]};
             end
+            tx_st <= tx_st + 2'd1;
+            if (tx_st == 2'd3) state <= CU_TX_SEL;
           end
 
         CU_TX_NEXT_TBD:
@@ -617,7 +668,7 @@ module ie_cu (
   end
 
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, bus_rdata_i[31:16], bus_err_i, cmd[12:3]};
+  wire _unused = &{1'b0, bus_err_i, cmd[12:3]};
   // verilator lint_on UNUSED
 
 endmodule

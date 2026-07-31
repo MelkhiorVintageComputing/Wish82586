@@ -705,4 +705,59 @@ TEST(sys_alloc0_round_trip_through_loopback) {
   CHECK_MSG(env.phy().tx_count() == 0, "a looped back frame reached the wire");
 }
 
+
+TEST(sys_transmit_stages_in_words) {
+  // Staging reads whole words where it can.  A byte at a time would be one
+  // bus read per byte of frame; this checks it is nothing like that, which is
+  // what stops the transmit side monopolising a bus the receive unit needs.
+  bring_up(env);
+  EthFrame f(env.peer_mac(), env.local_mac(), 0x0800, random_payload(1000, 80));
+
+  env.mem().clear_log();
+  CHECK_DRV(env.drv().transmit(f));
+
+  size_t reads = 0;
+  for (const WbMem::Access& a : env.mem().log())
+    if (!a.write) reads++;
+
+  const size_t frame_len = f.to_wire(false, false).size();   // 1014 bytes
+  CHECK_MSG(reads < frame_len / 2,
+            "the frame was staged a byte at a time");
+  logf("%zu bus reads to stage %zu bytes", reads, frame_len);
+
+  CHECK_MSG(env.sim().run_until([&]() { return env.phy().tx_count() >= 1; }, 2 * MS),
+            "nothing was transmitted");
+  CHECK_EQ(env.phy().pop_tx().data, f.to_wire(true, true));
+}
+
+TEST(sys_transmit_from_an_unaligned_buffer) {
+  // A transmit buffer need not start on a word boundary, and its count need
+  // not be a multiple of four.  Both ends have to fall back to bytes.
+  bring_up(env);
+  EthFrame f(env.peer_mac(), env.local_mac(), 0x0800, random_payload(83, 81));
+  const Bytes wire = f.to_wire(false, false);
+
+  // Build the command block by hand so the buffer can sit at an odd address.
+  const uint32_t buf = 0x0003'0001;            // deliberately not word aligned
+  env.mem().write_block(buf, wire);
+
+  const uint16_t tbd = env.img().alloc(8);
+  env.mem().wr16(env.img().addr_of(tbd) + 0,
+                 uint16_t((wire.size() & 0x3fff) | ie::RBD_EOF));
+  env.mem().wr16(env.img().addr_of(tbd) + 2, ie::NULL_PTR);
+  env.mem().wr24(env.img().addr_of(tbd) + 4, buf);
+
+  const uint16_t cb = env.img().alloc(16);
+  for (int i = 0; i < 16; i++) env.mem().wr8(env.img().addr_of(cb) + uint32_t(i), 0);
+  env.mem().wr16(env.img().addr_of(cb) + 2, ie::CB_CMD_EL | ie::CMD_TRANSMIT);
+  env.mem().wr16(env.img().addr_of(cb) + 4, ie::NULL_PTR);
+  env.mem().wr16(env.img().addr_of(cb) + 6, tbd);
+
+  CHECK_DRV(env.drv().run_cb(cb));
+  CHECK_MSG(env.img().cb_status(cb) & ie::CB_ST_OK, "the transmit failed");
+  CHECK_MSG(env.sim().run_until([&]() { return env.phy().tx_count() >= 1; }, 1 * MS),
+            "nothing was transmitted");
+  CHECK_EQ(env.phy().pop_tx().data, f.to_wire(true, true));
+}
+
 }  // namespace wtb

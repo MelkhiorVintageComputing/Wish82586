@@ -117,10 +117,12 @@ the word-wide path settles: it is to ride out the pause while the receive unit
 closes one buffer and fetches the next descriptor.  With small buffers at
 gigabit those pauses are what decide whether a frame survives.
 
-Transmit never had the problem: the command unit stages a whole frame before
-the transmitter starts, so the memory side has no real time constraint.  It
-still reads host memory a byte at a time, which is four times more bus traffic
-than it needs but costs only staging latency.
+Transmit never had the same problem, because the command unit stages a whole
+frame before the transmitter starts and so has no real time constraint.  It
+reads in words too, though, dropping to bytes only for an unaligned buffer
+start or a short tail: the bus is shared with the receive unit, which does
+have a constraint, and a frame being staged used to take one transaction per
+byte of it.
 
 Standard MII, PHY-sourced clocks:
 

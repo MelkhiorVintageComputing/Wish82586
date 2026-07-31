@@ -113,10 +113,13 @@ Blocks reach memory through `wb_master`'s internal port: hold `req_i` with the
 address until `ack_o` pulses for one cycle.  `size_i` picks a byte, a 16-bit
 field, or a whole word with the caller's own `sel_i` - the receive unit uses
 that last one to move frame data four bytes at a time, posting each word so
-the transaction overlaps the next four bytes arriving.  One byte per
-transaction was fine at 100 Mb/s and an order of magnitude too slow at
-gigabit; if you make the receive path serialise on the bus again, GMII is
-where it will show up.  `ie_core` drives it from a
+the transaction overlaps the next four bytes arriving.  The command unit stages transmit frames the
+same way, dropping to bytes only for an unaligned start or a short tail.
+
+One byte per transaction was fine at 100 Mb/s and an order of magnitude too
+slow at gigabit; if you make the receive path serialise on the bus again,
+GMII is where it will show up.  `sys_transmit_stages_in_words` guards the
+transmit side by counting bus reads.  `ie_core` drives it from a
 combinational request decode plus a sequential state machine - follow that
 shape for the units still to come, and note that `wb_master` refuses a new
 request during its own `ack_o` cycle so a state can safely hold `req_i` high
