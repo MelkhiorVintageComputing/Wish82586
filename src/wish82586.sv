@@ -102,28 +102,108 @@ module wish82586 #(
   // TODO: command unit, receive unit, transmit/receive MAC datapath, and an
   // arbiter in front of wb_master once more than one block wants the bus.
   // ---------------------------------------------------------------------------
+  // Memory port, shared by the SCB handler and the command unit.
   logic        bus_req, bus_we, bus_byte, bus_ack, bus_err;
   logic [23:0] bus_addr;
-  logic [15:0] bus_wdata, bus_rdata;
+  logic [15:0] bus_wdata, bus_rdata, bus_rdata_raw;
+
+  logic        scb_req, scb_we, scb_byte, scb_ack, scb_err;
+  logic [23:0] scb_addr;
+  logic [15:0] scb_wdata;
+
+  logic        cu_req, cu_we, cu_byte, cu_ack, cu_err;
+  logic [23:0] cu_addr;
+  logic [15:0] cu_wdata;
+
+  // Command unit control and the parameters it captures.
+  logic [23:0] cbbase;
+  logic        cu_start, cu_resume, cu_suspend, cu_abort;
+  logic [15:0] cu_cbl;
+  logic [2:0]  cu_cus;
+  logic        ev_cx, ev_cna;
+  logic [47:0] ia_addr;
+  logic [95:0] cfg_bytes;
 
   ie_core u_core (
-      .clk         (clk),
-      .rst         (rst),
-      .core_rst_i  (core_rst),
-      .ca_i        (ca),
-      .scp_addr_i  (scp_addr),
-      .cus_o       (cus),
-      .rus_o       (rus),
-      .busy_o      (busy),
-      .int_o       (core_int),
-      .bus_req_o   (bus_req),
-      .bus_we_o    (bus_we),
-      .bus_byte_o  (bus_byte),
-      .bus_addr_o  (bus_addr),
-      .bus_wdata_o (bus_wdata),
-      .bus_ack_i   (bus_ack),
-      .bus_rdata_i (bus_rdata),
-      .bus_err_i   (bus_err)
+      .clk          (clk),
+      .rst          (rst),
+      .core_rst_i   (core_rst),
+      .ca_i         (ca),
+      .scp_addr_i   (scp_addr),
+      .cus_o        (cus),
+      .rus_o        (rus),
+      .busy_o       (busy),
+      .int_o        (core_int),
+      .cbbase_o     (cbbase),
+      .cu_start_o   (cu_start),
+      .cu_cbl_o     (cu_cbl),
+      .cu_resume_o  (cu_resume),
+      .cu_suspend_o (cu_suspend),
+      .cu_abort_o   (cu_abort),
+      .cus_i        (cu_cus),
+      .ev_cx_i      (ev_cx),
+      .ev_cna_i     (ev_cna),
+      .bus_req_o    (scb_req),
+      .bus_we_o     (scb_we),
+      .bus_byte_o   (scb_byte),
+      .bus_addr_o   (scb_addr),
+      .bus_wdata_o  (scb_wdata),
+      .bus_ack_i    (scb_ack),
+      .bus_rdata_i  (bus_rdata),
+      .bus_err_i    (scb_err)
+  );
+
+  ie_cu u_cu (
+      .clk          (clk),
+      .rst          (rst),
+      .core_rst_i   (core_rst),
+      .cbbase_i     (cbbase),
+      .start_i      (cu_start),
+      .start_cbl_i  (cu_cbl),
+      .resume_i     (cu_resume),
+      .suspend_i    (cu_suspend),
+      .abort_i      (cu_abort),
+      .cus_o        (cu_cus),
+      .ev_cx_o      (ev_cx),
+      .ev_cna_o     (ev_cna),
+      .ia_addr_o    (ia_addr),
+      .cfg_bytes_o  (cfg_bytes),
+      .bus_req_o    (cu_req),
+      .bus_we_o     (cu_we),
+      .bus_byte_o   (cu_byte),
+      .bus_addr_o   (cu_addr),
+      .bus_wdata_o  (cu_wdata),
+      .bus_ack_i    (cu_ack),
+      .bus_rdata_i  (bus_rdata),
+      .bus_err_i    (cu_err)
+  );
+
+  wb_arb u_arb (
+      .clk        (clk),
+      .rst        (rst),
+      .p0_req_i   (scb_req),
+      .p0_we_i    (scb_we),
+      .p0_byte_i  (scb_byte),
+      .p0_addr_i  (scb_addr),
+      .p0_wdata_i (scb_wdata),
+      .p0_ack_o   (scb_ack),
+      .p0_err_o   (scb_err),
+      .p1_req_i   (cu_req),
+      .p1_we_i    (cu_we),
+      .p1_byte_i  (cu_byte),
+      .p1_addr_i  (cu_addr),
+      .p1_wdata_i (cu_wdata),
+      .p1_ack_o   (cu_ack),
+      .p1_err_o   (cu_err),
+      .rdata_o    (bus_rdata),
+      .req_o      (bus_req),
+      .we_o       (bus_we),
+      .byte_o     (bus_byte),
+      .addr_o     (bus_addr),
+      .wdata_o    (bus_wdata),
+      .ack_i      (bus_ack),
+      .err_i      (bus_err),
+      .rdata_i    (bus_rdata_raw)
   );
 
   wb_master #(
@@ -138,7 +218,7 @@ module wish82586 #(
       .addr_i    (bus_addr),
       .wdata_i   (bus_wdata),
       .ack_o     (bus_ack),
-      .rdata_o   (bus_rdata),
+      .rdata_o   (bus_rdata_raw),
       .err_o     (bus_err),
       .wbm_cyc_o (wbm_cyc_o),
       .wbm_stb_o (wbm_stb_o),
@@ -163,9 +243,11 @@ module wish82586 #(
   assign mdio_oe   = 1'b0;
 
   // Signals consumed once the datapath exists; keep the linter quiet for now.
+  // ia_addr and cfg_bytes are already captured from the IA-SETUP and CONFIGURE
+  // commands and are waiting for the transmit and receive paths to use them.
   // verilator lint_off UNUSED
   wire _unused = &{1'b0, mii_tx_clk, mii_rx_clk, mii_rxd, mii_rx_dv, mii_rx_er,
-                   mii_crs, mii_col, mdio_i};
+                   mii_crs, mii_col, mdio_i, ia_addr, cfg_bytes};
   // verilator lint_on UNUSED
 
 endmodule

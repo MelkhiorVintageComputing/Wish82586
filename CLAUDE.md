@@ -10,8 +10,24 @@ side.  The point is to let recreated vintage machines run their original,
 unmodified drivers, so **the drivers in `doc/drivers/` are the specification**.
 When a behavioural question comes up ("does the chip insert the source
 address?", "what does the driver expect after the first channel attention?"),
-answer it by reading `doc/drivers/Sun3280_ROM/if_ie.c` and `if_iereg.h`, not
-from memory of the datasheet.
+answer it by reading the drivers, not from memory of the datasheet.
+
+Which driver to read matters:
+
+* **`doc/drivers/NetBSD/i82586reg.h` is the authority on bit positions and
+  structure offsets.**  It serves both a little-endian ISA card and big-endian
+  Suns, so it describes the chip's own view of memory, which is what the RTL
+  sees.
+* The `doc/drivers/Sun*_ROM` headers are a *byte-swapped* view - those machines
+  swap in hardware between the CPU and the shared memory - so their bit
+  numbers disagree with ours by design.  Read them for behaviour and driver
+  sequencing, never for bit positions.  This already caused one wrong layout;
+  `doc/drivers/NetBSD/README.md` has the correspondence table.
+
+`tb/cpp/tests/test_layout.cpp` pins our constants to the NetBSD header.  If you
+change anything in `wish82586_pkg.sv` or `i82586.h`, that test is what stops
+the testbench and the RTL from quietly agreeing with each other and with
+nothing else.
 
 The MAC itself is mostly unwritten.  The verification infrastructure is
 finished and the system-level tests are already there, marked pending.  Work

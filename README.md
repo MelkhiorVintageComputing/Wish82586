@@ -8,18 +8,19 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 
 ## Status
 
-The verification infrastructure is in place.  The chip comes up: it walks the
-SCP and ISCP, reports itself initialised in the SCB and handles channel
-attention.  The units that do the actual networking are next.
+The verification infrastructure is in place.  The chip comes up, runs command
+lists and accepts its address and configuration; what is missing is the part
+that puts frames on the wire.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
 | control registers (`wb_csr`)              | done, tested               |
 | Wishbone master (`wb_master`)             | done, tested               |
 | init sequencer and SCB handler (`ie_core`)| done, tested               |
+| command unit (`ie_cu`)                    | NOP, IA-SETUP, CONFIGURE   |
+| memory arbiter (`wb_arb`)                 | done, tested               |
 | Ethernet FCS (`crc32_eth`)                | done, tested               |
 | synchronous FIFO (`sync_fifo`)            | done, tested               |
-| command unit                              | to do                      |
 | receive unit                              | to do                      |
 | transmit / receive datapath, MII          | to do                      |
 | GMII                                      | later                      |

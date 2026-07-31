@@ -60,8 +60,7 @@ TEST(sys_reset_stops_the_chip) {
             "the chip kept using the bus while held in reset");
 }
 
-TEST_PENDING(sys_interrupt_on_command_completion,
-             "the command unit is not implemented") {
+TEST(sys_interrupt_on_command_completion) {
   env.drv().enable_irq(true);
   CHECK_DRV(env.drv().init());
   CHECK_EQ(env.dut()->dut_irq_o, 0);
@@ -80,7 +79,7 @@ TEST_PENDING(sys_interrupt_on_command_completion,
 // Command unit
 // ---------------------------------------------------------------------------
 
-TEST_PENDING(sys_command_list, "the command unit is not implemented") {
+TEST(sys_command_list) {
   CHECK_DRV(env.drv().init());
   ie::MemImage& img = env.img();
 
@@ -100,8 +99,7 @@ TEST_PENDING(sys_command_list, "the command unit is not implemented") {
   CHECK_EQ(img.scb_cus(), uint16_t(ie::CUS_IDLE));
 }
 
-TEST_PENDING(sys_command_suspend_and_resume,
-             "the command unit is not implemented") {
+TEST(sys_command_suspend_and_resume) {
   CHECK_DRV(env.drv().init());
   ie::MemImage& img = env.img();
 

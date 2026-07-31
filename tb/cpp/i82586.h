@@ -23,20 +23,23 @@ namespace wtb {
 namespace ie {
 
 // ---- SCB status / command -------------------------------------------------
-constexpr uint16_t SCB_ST_RNR = 1u << 4;
-constexpr uint16_t SCB_ST_CNA = 1u << 5;
-constexpr uint16_t SCB_ST_FR = 1u << 6;
-constexpr uint16_t SCB_ST_CX = 1u << 7;
-constexpr int SCB_ST_RUS_LSB = 8;
-constexpr int SCB_ST_CUS_LSB = 12;
+// The chip's own view of the word; see doc/drivers/NetBSD/i82586reg.h.  The
+// Sun ROM headers look different because those machines byte swap in hardware
+// between the CPU and the shared memory.
+constexpr uint16_t SCB_ST_RNR = 1u << 12;
+constexpr uint16_t SCB_ST_CNA = 1u << 13;
+constexpr uint16_t SCB_ST_FR = 1u << 14;
+constexpr uint16_t SCB_ST_CX = 1u << 15;
+constexpr int SCB_ST_RUS_LSB = 4;
+constexpr int SCB_ST_CUS_LSB = 8;
 
-constexpr uint16_t SCB_CMD_ACK_RNR = 1u << 4;
-constexpr uint16_t SCB_CMD_ACK_CNA = 1u << 5;
-constexpr uint16_t SCB_CMD_ACK_FR = 1u << 6;
-constexpr uint16_t SCB_CMD_ACK_CX = 1u << 7;
-constexpr uint16_t SCB_CMD_RESET = 1u << 15;
+constexpr uint16_t SCB_CMD_ACK_RNR = 1u << 12;
+constexpr uint16_t SCB_CMD_ACK_CNA = 1u << 13;
+constexpr uint16_t SCB_CMD_ACK_FR = 1u << 14;
+constexpr uint16_t SCB_CMD_ACK_CX = 1u << 15;
+constexpr uint16_t SCB_CMD_RESET = 1u << 7;
 constexpr int SCB_CMD_CUC_LSB = 8;
-constexpr int SCB_CMD_RUC_LSB = 12;
+constexpr int SCB_CMD_RUC_LSB = 4;
 
 enum Cuc : uint16_t { CUC_NOP = 0, CUC_START = 1, CUC_RESUME = 2, CUC_SUSPEND = 3, CUC_ABORT = 4 };
 enum Ruc : uint16_t { RUC_NOP = 0, RUC_START = 1, RUC_RESUME = 2, RUC_SUSPEND = 3, RUC_ABORT = 4 };
@@ -72,10 +75,11 @@ constexpr uint16_t TX_ST_DEFER = 1u << 7;
 constexpr uint16_t TX_ST_UNDERRUN = 1u << 8;
 constexpr uint16_t TX_ST_NO_CTS = 1u << 9;
 constexpr uint16_t TX_ST_NO_CRS = 1u << 10;
+constexpr uint16_t TX_ST_LATECOLL = 1u << 11;
 
 // ---- receive frame descriptor status --------------------------------------
-constexpr uint16_t RFD_ST_SHORT = 1u << 0;
-constexpr uint16_t RFD_ST_NO_EOF = 1u << 1;
+constexpr uint16_t RFD_ST_SHORT = 1u << 7;
+constexpr uint16_t RFD_ST_NO_EOF = 1u << 6;
 constexpr uint16_t RFD_ST_OVERRUN = 1u << 8;
 constexpr uint16_t RFD_ST_NO_SPACE = 1u << 9;
 constexpr uint16_t RFD_ST_ALIGN = 1u << 10;

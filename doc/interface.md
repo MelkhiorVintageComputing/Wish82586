@@ -95,4 +95,22 @@ The chip is driven entirely through shared memory, exactly as the drivers in
 
 Command opcodes, status bits and structure offsets are in
 `src/wish82586_pkg.sv` (RTL) and `tb/cpp/i82586.h` (testbench).  The two are
-kept in step by hand - if you touch one, touch the other.
+kept in step by hand - if you touch one, touch the other - and
+`tb/cpp/tests/test_layout.cpp` checks both against the independent reference
+in `doc/drivers/NetBSD/i82586reg.h`.
+
+### Endianness
+
+Everything above is the chip's own view of memory: little-endian 16-bit
+fields, with the SCB status word carrying CX, FR, CNA and RNR at bits 15 to
+12, CUS at [10:8] and RUS at [6:4].  The Wishbone side is little endian, so
+that is what Wish82586 implements.
+
+The vintage ROM drivers in `doc/drivers/Sun*` appear to disagree - they put
+CU start at bit 0 rather than bit 8, for instance - because those machines
+byte swap in hardware between the CPU and the shared memory, and their headers
+describe the swapped view.  A big-endian host that wants to run one of those
+drivers unmodified needs the same swap in its bus glue.  Wish82586 does not do
+it: which end of the machine is big is not the MAC's business.
+`doc/drivers/NetBSD/README.md` works the correspondence through field by
+field.

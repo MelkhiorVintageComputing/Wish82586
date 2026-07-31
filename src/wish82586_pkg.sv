@@ -41,22 +41,25 @@ package wish82586_pkg;
   localparam int SCB_OVRNERRS_OFF = 14;
   localparam int SCB_SIZE        = 16;
 
-  // SCB status word bits
-  localparam int SCB_ST_RUS_LSB = 8;   // [10:8]  receive unit state
-  localparam int SCB_ST_CUS_LSB = 12;  // [14:12] command unit state
-  localparam int SCB_ST_RNR     = 4;
-  localparam int SCB_ST_CNA     = 5;
-  localparam int SCB_ST_FR      = 6;
-  localparam int SCB_ST_CX      = 7;
+  // SCB status word bits.  See doc/drivers/NetBSD/i82586reg.h - the layout
+  // below is the chip's own view of the word, which is what the RTL sees in
+  // memory.  Big-endian hosts byte swap on the way in and out, which is why
+  // the Sun ROM headers appear to disagree.
+  localparam int SCB_ST_RUS_LSB = 4;   // [6:4]   receive unit state
+  localparam int SCB_ST_CUS_LSB = 8;   // [10:8]  command unit state
+  localparam int SCB_ST_RNR     = 12;
+  localparam int SCB_ST_CNA     = 13;
+  localparam int SCB_ST_FR      = 14;
+  localparam int SCB_ST_CX      = 15;
 
   // SCB command word bits
+  localparam int SCB_CMD_RUC_LSB = 4;   // [6:4]   receive unit control
   localparam int SCB_CMD_CUC_LSB = 8;   // [10:8]  command unit control
-  localparam int SCB_CMD_RUC_LSB = 12;  // [14:12] receive unit control
-  localparam int SCB_CMD_RESET   = 15;
-  localparam int SCB_CMD_ACK_RNR = 4;
-  localparam int SCB_CMD_ACK_CNA = 5;
-  localparam int SCB_CMD_ACK_FR  = 6;
-  localparam int SCB_CMD_ACK_CX  = 7;
+  localparam int SCB_CMD_RESET   = 7;
+  localparam int SCB_CMD_ACK_RNR = 12;
+  localparam int SCB_CMD_ACK_CNA = 13;
+  localparam int SCB_CMD_ACK_FR  = 14;
+  localparam int SCB_CMD_ACK_CX  = 15;
 
   // Command unit control / state
   localparam logic [2:0] CUC_NOP     = 3'd0;
@@ -123,6 +126,7 @@ package wish82586_pkg;
   localparam int TX_ST_UNDERRUN = 8;
   localparam int TX_ST_NO_CTS   = 9;
   localparam int TX_ST_NO_CRS   = 10;
+  localparam int TX_ST_LATECOLL = 11;
 
   // Transmit buffer descriptor (TBD)
   localparam int TBD_COUNT_OFF = 0;   // [13:0] count, [15] EOF
@@ -144,8 +148,8 @@ package wish82586_pkg;
   localparam int RFD_SIZE       = 22;
 
   // RFD status bits
-  localparam int RFD_ST_NO_EOF   = 1;
-  localparam int RFD_ST_SHORT    = 0;
+  localparam int RFD_ST_NO_EOF   = 6;
+  localparam int RFD_ST_SHORT    = 7;
   localparam int RFD_ST_OVERRUN  = 8;
   localparam int RFD_ST_NO_SPACE = 9;
   localparam int RFD_ST_ALIGN    = 10;

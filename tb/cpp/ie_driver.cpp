@@ -85,9 +85,16 @@ bool IeDriver::wait_scb_status(uint16_t mask, uint16_t value) {
 bool IeDriver::run_cb(uint16_t cb) {
   img_.set_scb_cbl(cb);
   if (!issue_scb(uint16_t(ie::CUC_START << ie::SCB_CMD_CUC_LSB))) return false;
-  if (!sim_.run_until([&]() { return (img_.cb_status(cb) & ie::CB_ST_C) != 0; },
-                      t_cmd))
-    return fail("the command block never completed");
+  // The list is finished when the block is complete *and* the command unit has
+  // reported itself not active - a list can be longer than the block we were
+  // handed, and CNA is what says the whole of it has run.
+  if (!sim_.run_until(
+          [&]() {
+            return (img_.cb_status(cb) & ie::CB_ST_C) &&
+                   (img_.scb_status() & ie::SCB_ST_CNA);
+          },
+          t_cmd))
+    return fail("the command list never ran to completion");
   return ack_all();
 }
 
@@ -111,8 +118,12 @@ bool IeDriver::transmit(const EthFrame& f, uint16_t* cb_out) {
   if (cb_out) *cb_out = cb;
   img_.set_scb_cbl(cb);
   if (!issue_scb(uint16_t(ie::CUC_START << ie::SCB_CMD_CUC_LSB))) return false;
-  if (!sim_.run_until([&]() { return (img_.cb_status(cb) & ie::CB_ST_C) != 0; },
-                      t_tx))
+  if (!sim_.run_until(
+          [&]() {
+            return (img_.cb_status(cb) & ie::CB_ST_C) &&
+                   (img_.scb_status() & ie::SCB_ST_CNA);
+          },
+          t_tx))
     return fail("the transmit command never completed");
   return ack_all();
 }
