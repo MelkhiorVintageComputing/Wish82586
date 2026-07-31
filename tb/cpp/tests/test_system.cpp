@@ -32,7 +32,7 @@ void bring_up(Env& env) {
 // Initialisation
 // ---------------------------------------------------------------------------
 
-TEST_PENDING(sys_init_sequence, "the initialisation sequencer is not implemented") {
+TEST(sys_init_sequence) {
   ie::MemImage& img = env.img();
   CHECK_DRV(env.drv().init());
 
@@ -50,8 +50,7 @@ TEST_PENDING(sys_init_sequence, "the initialisation sequencer is not implemented
   CHECK_MSG(!env.mem().oob_seen(), "the chip accessed memory outside the model");
 }
 
-TEST_PENDING(sys_reset_stops_the_chip,
-             "the initialisation sequencer is not implemented") {
+TEST(sys_reset_stops_the_chip) {
   CHECK_DRV(env.drv().init());
   env.drv().hold_reset(true);
   env.tick(50);

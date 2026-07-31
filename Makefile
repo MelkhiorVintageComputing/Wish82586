@@ -28,6 +28,8 @@ RTL       := $(RTL_DIR)/wish82586_pkg.sv \
              $(RTL_DIR)/crc32_eth.sv \
              $(RTL_DIR)/sync_fifo.sv \
              $(RTL_DIR)/wb_csr.sv \
+             $(RTL_DIR)/wb_master.sv \
+             $(RTL_DIR)/ie_core.sv \
              $(RTL_DIR)/wish82586.sv
 TB_SV     := $(TB_SV_DIR)/tb_top.sv
 CPP_SRCS  := $(wildcard $(TB_CPP)/*.cpp) $(wildcard $(TB_CPP)/tests/*.cpp)
@@ -69,7 +71,7 @@ lint-icarus:
 	$(IVERILOG) -g2012 -t null -o /dev/null $(RTL) $(TB_SV)
 
 synth:
-	@for top in wish82586 crc32_eth sync_fifo wb_csr; do \
+	@for top in wish82586 crc32_eth sync_fifo wb_csr wb_master ie_core; do \
 	  printf '%-12s ' "$$top"; \
 	  $(YOSYS) -q -p "read_verilog -sv $(RTL); hierarchy -check -top $$top; proc; opt" \
 	    && echo "elaborates" || exit 1; \

@@ -92,7 +92,12 @@ class WbMem {
 
   // ---- observation --------------------------------------------------------
   const std::vector<Access>& log() const { return log_; }
-  void clear_log() { log_.clear(); }
+  // Forgets the log and the counters, so everything below is "since here".
+  void clear_log() {
+    log_.clear();
+    reads_ = 0;
+    writes_ = 0;
+  }
   size_t reads() const { return reads_; }
   size_t writes() const { return writes_; }
   bool oob_seen() const { return oob_seen_; }

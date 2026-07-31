@@ -97,24 +97,63 @@ module wish82586 #(
   );
 
   // ---------------------------------------------------------------------------
-  // TODO: initialisation sequencer (SCP -> ISCP -> SCB), command unit, receive
-  // unit, transmit/receive MAC datapath and the Wishbone master arbiter.
+  // Initialisation sequencer and SCB handler, and the memory port it drives.
   //
-  // Until they land the core stays idle: no bus activity, no transmission and
-  // the status fields read back as idle.
+  // TODO: command unit, receive unit, transmit/receive MAC datapath, and an
+  // arbiter in front of wb_master once more than one block wants the bus.
   // ---------------------------------------------------------------------------
-  assign cus       = wish82586_pkg::CUS_IDLE;
-  assign rus       = wish82586_pkg::RUS_IDLE;
-  assign busy      = 1'b0;
-  assign core_int  = 1'b0;
+  logic        bus_req, bus_we, bus_byte, bus_ack, bus_err;
+  logic [23:0] bus_addr;
+  logic [15:0] bus_wdata, bus_rdata;
 
-  assign wbm_cyc_o = 1'b0;
-  assign wbm_stb_o = 1'b0;
-  assign wbm_we_o  = 1'b0;
-  assign wbm_sel_o = '0;
-  assign wbm_adr_o = '0;
-  assign wbm_dat_o = '0;
+  ie_core u_core (
+      .clk         (clk),
+      .rst         (rst),
+      .core_rst_i  (core_rst),
+      .ca_i        (ca),
+      .scp_addr_i  (scp_addr),
+      .cus_o       (cus),
+      .rus_o       (rus),
+      .busy_o      (busy),
+      .int_o       (core_int),
+      .bus_req_o   (bus_req),
+      .bus_we_o    (bus_we),
+      .bus_byte_o  (bus_byte),
+      .bus_addr_o  (bus_addr),
+      .bus_wdata_o (bus_wdata),
+      .bus_ack_i   (bus_ack),
+      .bus_rdata_i (bus_rdata),
+      .bus_err_i   (bus_err)
+  );
 
+  wb_master #(
+      .WB_ADDR_W (WB_ADDR_W),
+      .WB_DATA_W (WB_DATA_W)
+  ) u_wbm (
+      .clk       (clk),
+      .rst       (rst),
+      .req_i     (bus_req),
+      .we_i      (bus_we),
+      .byte_i    (bus_byte),
+      .addr_i    (bus_addr),
+      .wdata_i   (bus_wdata),
+      .ack_o     (bus_ack),
+      .rdata_o   (bus_rdata),
+      .err_o     (bus_err),
+      .wbm_cyc_o (wbm_cyc_o),
+      .wbm_stb_o (wbm_stb_o),
+      .wbm_we_o  (wbm_we_o),
+      .wbm_sel_o (wbm_sel_o),
+      .wbm_adr_o (wbm_adr_o),
+      .wbm_dat_o (wbm_dat_o),
+      .wbm_dat_i (wbm_dat_i),
+      .wbm_ack_i (wbm_ack_i),
+      .wbm_err_i (wbm_err_i)
+  );
+
+  // ---------------------------------------------------------------------------
+  // The MAC datapath is still to be written, so the PHY side stays quiet.
+  // ---------------------------------------------------------------------------
   assign mii_txd   = '0;
   assign mii_tx_en = 1'b0;
   assign mii_tx_er = 1'b0;
@@ -125,8 +164,7 @@ module wish82586 #(
 
   // Signals consumed once the datapath exists; keep the linter quiet for now.
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, core_rst, ca, scp_addr, wbm_dat_i, wbm_ack_i, wbm_err_i,
-                   mii_tx_clk, mii_rx_clk, mii_rxd, mii_rx_dv, mii_rx_er,
+  wire _unused = &{1'b0, mii_tx_clk, mii_rx_clk, mii_rxd, mii_rx_dv, mii_rx_er,
                    mii_crs, mii_col, mdio_i};
   // verilator lint_on UNUSED
 

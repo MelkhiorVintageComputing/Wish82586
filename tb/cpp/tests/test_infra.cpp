@@ -89,19 +89,25 @@ TEST(infra_csr_access) {
   env.host().write32(csr::SCP_ADDR, 0x000ffff6);
   CHECK_EQ(env.host().read32(csr::SCP_ADDR), 0x000ffff6u);
 
-  // Releasing reset sticks; channel attention is a pulse and reads back zero.
-  env.host().write32(csr::CTRL, 0);
-  CHECK_EQ(env.host().read32(csr::CTRL) & csr::CTRL_RST, 0u);
-  env.host().write32(csr::CTRL, csr::CTRL_CA);
+  // Channel attention is a pulse and always reads back as zero.  The core is
+  // still held in reset here, so it ignores it.
+  env.host().write32(csr::CTRL, csr::CTRL_RST | csr::CTRL_CA);
   CHECK_EQ(env.host().read32(csr::CTRL) & csr::CTRL_CA, 0u);
+  CHECK_EQ(env.host().read32(csr::CTRL) & csr::CTRL_RST, csr::CTRL_RST);
 
-  env.host().write32(csr::CTRL, csr::CTRL_IRQ_EN);
+  env.host().write32(csr::CTRL, csr::CTRL_RST | csr::CTRL_IRQ_EN);
   CHECK_EQ(env.host().read32(csr::CTRL) & csr::CTRL_IRQ_EN, csr::CTRL_IRQ_EN);
 
-  // An idle core must not touch the shared memory at all.
+  // A core held in reset must not touch the shared memory or interrupt.
   env.tick(200);
   CHECK_EQ(env.mem().accesses(), size_t(0));
   CHECK_EQ(env.dut()->dut_irq_o, 0);
+
+  // Releasing reset sticks.  Nothing happens until a channel attention.
+  env.host().write32(csr::CTRL, 0);
+  CHECK_EQ(env.host().read32(csr::CTRL) & csr::CTRL_RST, 0u);
+  env.tick(200);
+  CHECK_EQ(env.mem().accesses(), size_t(0));
 }
 
 // ---------------------------------------------------------------------------

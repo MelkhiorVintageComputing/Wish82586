@@ -8,19 +8,21 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 
 ## Status
 
-The verification infrastructure is in place; the MAC itself is not written yet.
+The verification infrastructure is in place.  The chip comes up: it walks the
+SCP and ISCP, reports itself initialised in the SCB and handles channel
+attention.  The units that do the actual networking are next.
 
-| block                                    | state                       |
-|------------------------------------------|-----------------------------|
-| control registers (`wb_csr`)             | done, tested                |
-| Ethernet FCS (`crc32_eth`)               | done, tested                |
-| synchronous FIFO (`sync_fifo`)           | done, tested                |
-| initialisation sequencer (SCP/ISCP/SCB)  | to do                       |
-| command unit                             | to do                       |
-| receive unit                             | to do                       |
-| transmit / receive datapath, MII         | to do                       |
-| Wishbone master (DMA)                    | to do                       |
-| GMII                                     | later                       |
+| block                                     | state                      |
+|-------------------------------------------|----------------------------|
+| control registers (`wb_csr`)              | done, tested               |
+| Wishbone master (`wb_master`)             | done, tested               |
+| init sequencer and SCB handler (`ie_core`)| done, tested               |
+| Ethernet FCS (`crc32_eth`)                | done, tested               |
+| synchronous FIFO (`sync_fifo`)            | done, tested               |
+| command unit                              | to do                      |
+| receive unit                              | to do                      |
+| transmit / receive datapath, MII          | to do                      |
+| GMII                                      | later                      |
 
 The system-level tests for everything in the "to do" list are already written
 and run on every build, marked pending.  They are the specification: as each
