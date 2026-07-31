@@ -111,4 +111,13 @@ its own - see the note at the top of `cosim/scripts/`.
 3. Replace that software model with the Verilated `wish82586`, and check that
    `ai(4)` still attaches, sees its address, and passes packets.
 
-Step 1 is where this document currently stops.
+Step 1 is done: `cosim/scripts/` builds QEMU 7.2.22 from source, installs
+NetBSD 10.1/i386 over the network into `work/images/`, and `boot-netbsd.sh`
+boots it to a login prompt with `wm0` attached.
+
+One thing learned driving the installer that is worth keeping: a process that
+is alive, writing to its log and growing its output file can still be going in
+circles.  This one installed NetBSD three times over while every check said it
+was healthy.  Counting how often the same screen has been answered is what
+catches it, and the loop now refuses to answer any one screen more than a
+handful of times.

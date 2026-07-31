@@ -222,7 +222,9 @@ def run_sysinst(con, args):
         pick("Exit Install System")(text)
         state["done"] = True
 
-    def extracted(text):
+    def complete(text):
+        # sysinst says this once the sets are in.  It is what tells the main
+        # menu row below that a second pass would be a reinstall.
         state["extracted"] = True
         con.line()
 
@@ -263,7 +265,8 @@ def run_sysinst(con, args):
         ("IPv4 name server",                 enter),
         ("Are they OK",                      pick_or_enter("Yes")),
         ("CD-ROM",                           pick("CD-ROM")),
-        ("Hit enter to continue",            extracted),
+        ("is now complete",                  complete),
+        ("Hit enter to continue",            enter),
         # An empty root password: this is a disposable test machine that
         # exists to run one driver, and a password would only be one more
         # thing for the boot script to type.
@@ -271,8 +274,13 @@ def run_sysinst(con, args):
         ("Retype new password",              enter),
         ("Finished configuring",             pick("Finished configuring")),
         ("Configure network",                pick("Finished configuring")),
-        ("Install NetBSD to hard disk",      pick("Install NetBSD to hard disk")),
+        # Both of these are on the main menu, and after a finished install it
+        # comes back up.  Exit is listed first so it gets to decide: before
+        # the sets are in it starts the install, and afterwards it leaves.
+        # The other way round, the installer reinstalls for ever - which it
+        # did, three times, before anyone noticed the disk image growing.
         ("Exit Install System",              exit_installer),
+        ("Install NetBSD to hard disk",      pick("Install NetBSD to hard disk")),
         # A fresh VM has no entropy to speak of and this machine is not going
         # to be generating ssh host keys anyone depends on.
         ("Not now, continue",                pick("Not now, continue")),
