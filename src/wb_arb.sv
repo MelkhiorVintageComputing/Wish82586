@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 //
-// Two-way arbiter in front of the memory port.
+// Three-way arbiter in front of the memory port.
 //
-// Port 0 has priority.  It belongs to the SCB handler, whose accesses come in
-// short bursts after a channel attention, so the command and receive units on
-// the other port cannot be starved for long.
+// Priority runs 0, 1, 2.  Port 0 belongs to the SCB handler, whose accesses
+// come in short bursts after a channel attention; port 1 is the receive unit,
+// which cannot ask the wire to wait; port 2 is the command unit, which can.
 //
 // A grant is taken when a request first appears and held until the access is
 // acknowledged, which is what wb_master expects: the requester keeps req
@@ -32,6 +32,15 @@ module wb_arb (
     output logic        p1_ack_o,
     output logic        p1_err_o,
 
+    // ---- port 2 -------------------------------------------------------------
+    input  logic        p2_req_i,
+    input  logic        p2_we_i,
+    input  logic        p2_byte_i,
+    input  logic [23:0] p2_addr_i,
+    input  logic [15:0] p2_wdata_i,
+    output logic        p2_ack_o,
+    output logic        p2_err_o,
+
     // Read data is shared; each port latches it on its own ack.
     output logic [15:0] rdata_o,
 
@@ -46,22 +55,21 @@ module wb_arb (
     input  logic [15:0] rdata_i
 );
 
-  logic lock;   // a grant is in progress
-  logic sel;    // which port holds it
+  logic       lock;   // a grant is in progress
+  logic [1:0] sel;    // which port holds it
 
   // Before the grant is locked in, priority decides; afterwards it stays put.
-  wire sel_now = lock ? sel : (p0_req_i ? 1'b0 : 1'b1);
+  wire [1:0] pick    = p0_req_i ? 2'd0 : (p1_req_i ? 2'd1 : 2'd2);
+  wire [1:0] sel_now = lock ? sel : pick;
+  wire       any_req = p0_req_i || p1_req_i || p2_req_i;
 
   always_ff @(posedge clk) begin
     if (rst) begin
       lock <= 1'b0;
-      sel  <= 1'b0;
+      sel  <= 2'd0;
     end else if (!lock) begin
-      if (p0_req_i) begin
-        sel  <= 1'b0;
-        lock <= 1'b1;
-      end else if (p1_req_i) begin
-        sel  <= 1'b1;
+      if (any_req) begin
+        sel  <= pick;
         lock <= 1'b1;
       end
     end else if (ack_i) begin
@@ -70,25 +78,37 @@ module wb_arb (
   end
 
   always_comb begin
-    if (sel_now) begin
-      req_o   = p1_req_i;
-      we_o    = p1_we_i;
-      byte_o  = p1_byte_i;
-      addr_o  = p1_addr_i;
-      wdata_o = p1_wdata_i;
-    end else begin
-      req_o   = p0_req_i;
-      we_o    = p0_we_i;
-      byte_o  = p0_byte_i;
-      addr_o  = p0_addr_i;
-      wdata_o = p0_wdata_i;
-    end
+    case (sel_now)
+      2'd0: begin
+        req_o   = p0_req_i;
+        we_o    = p0_we_i;
+        byte_o  = p0_byte_i;
+        addr_o  = p0_addr_i;
+        wdata_o = p0_wdata_i;
+      end
+      2'd1: begin
+        req_o   = p1_req_i;
+        we_o    = p1_we_i;
+        byte_o  = p1_byte_i;
+        addr_o  = p1_addr_i;
+        wdata_o = p1_wdata_i;
+      end
+      default: begin
+        req_o   = p2_req_i;
+        we_o    = p2_we_i;
+        byte_o  = p2_byte_i;
+        addr_o  = p2_addr_i;
+        wdata_o = p2_wdata_i;
+      end
+    endcase
   end
 
-  assign p0_ack_o = ack_i && !sel_now;
-  assign p0_err_o = err_i && !sel_now;
-  assign p1_ack_o = ack_i && sel_now;
-  assign p1_err_o = err_i && sel_now;
+  assign p0_ack_o = ack_i && (sel_now == 2'd0);
+  assign p0_err_o = err_i && (sel_now == 2'd0);
+  assign p1_ack_o = ack_i && (sel_now == 2'd1);
+  assign p1_err_o = err_i && (sel_now == 2'd1);
+  assign p2_ack_o = ack_i && (sel_now == 2'd2);
+  assign p2_err_o = err_i && (sel_now == 2'd2);
   assign rdata_o  = rdata_i;
 
 endmodule

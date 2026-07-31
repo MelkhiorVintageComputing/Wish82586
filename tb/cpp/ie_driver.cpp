@@ -69,11 +69,18 @@ bool IeDriver::issue_scb(uint16_t cmd) {
 }
 
 bool IeDriver::ack_all() {
-  uint16_t st = img_.scb_status();
-  uint16_t ack = uint16_t(st & (ie::SCB_ST_CX | ie::SCB_ST_FR | ie::SCB_ST_CNA |
-                                ie::SCB_ST_RNR));
-  if (!ack) return true;
-  return issue_scb(ack);
+  // Events do not all land at once - a command completing raises CX, and the
+  // command unit going idle raises CNA a moment later - so acknowledge until
+  // the chip has nothing left outstanding, the way a real interrupt handler
+  // loops on the status word.
+  for (int round = 0; round < 8; round++) {
+    uint16_t st = img_.scb_status();
+    uint16_t ack = uint16_t(st & (ie::SCB_ST_CX | ie::SCB_ST_FR | ie::SCB_ST_CNA |
+                                  ie::SCB_ST_RNR));
+    if (!ack) return true;
+    if (!issue_scb(ack)) return false;
+  }
+  return fail("the SCB kept reporting events that would not acknowledge");
 }
 
 bool IeDriver::wait_scb_status(uint16_t mask, uint16_t value) {
@@ -141,12 +148,14 @@ bool IeDriver::ru_abort() {
 }
 
 bool IeDriver::wait_rx(size_t n) {
+  // A driver is woken by FR, so wait for the descriptors *and* for the chip to
+  // have said so in the SCB - the two do not land in the same cycle.
   if (!sim_.run_until(
           [&]() {
             size_t done = 0;
             for (uint16_t rfd : img_.rfds())
               if (img_.mem().rd16(img_.addr_of(rfd)) & ie::RFD_ST_C) done++;
-            return done >= n;
+            return done >= n && (img_.scb_status() & ie::SCB_ST_FR);
           },
           t_rx))
     return fail("the receive unit never completed enough frames");

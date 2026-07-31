@@ -115,6 +115,21 @@ module wish82586 #(
   logic [23:0] cu_addr;
   logic [15:0] cu_wdata;
 
+  logic        ru_req, ru_we, ru_byte, ru_ack, ru_err;
+  logic [23:0] ru_addr;
+  logic [15:0] ru_wdata;
+
+  // Receive unit control and the receive FIFO between the two clock domains.
+  logic [23:0] scb_base;      // absolute address of the SCB
+  logic        ru_start, ru_resume, ru_suspend, ru_abort;
+  logic [15:0] ru_rfa;
+  logic [2:0]  ru_rus;
+  logic        ev_fr, ev_rnr;
+  logic        rxf_wr, rxf_full, rxf_rd, rxf_empty;
+  logic [11:0] rxf_wdata, rxf_rdata;
+  logic        rx_active;     // observation only
+  logic [15:0] rx_bytes;
+
   // Command unit control and the parameters it captures.
   logic [23:0] cbbase;
   logic        cu_start, cu_resume, cu_suspend, cu_abort;
@@ -143,6 +158,15 @@ module wish82586 #(
       .cus_i        (cu_cus),
       .ev_cx_i      (ev_cx),
       .ev_cna_i     (ev_cna),
+      .scb_addr_o   (scb_base),
+      .ru_start_o   (ru_start),
+      .ru_rfa_o     (ru_rfa),
+      .ru_resume_o  (ru_resume),
+      .ru_suspend_o (ru_suspend),
+      .ru_abort_o   (ru_abort),
+      .rus_i        (ru_rus),
+      .ev_fr_i      (ev_fr),
+      .ev_rnr_i     (ev_rnr),
       .bus_req_o    (scb_req),
       .bus_we_o     (scb_we),
       .bus_byte_o   (scb_byte),
@@ -178,6 +202,66 @@ module wish82586 #(
       .bus_err_i    (cu_err)
   );
 
+  // Receive path: front end in the PHY clock domain, FIFO across, receive unit
+  // on the system clock.
+  mii_rx u_mii_rx (
+      .rx_clk       (mii_rx_clk),
+      .rst          (rst),
+      .rxd          (mii_rxd),
+      .rx_dv        (mii_rx_dv),
+      .rx_er        (mii_rx_er),
+      .fifo_wr_o    (rxf_wr),
+      .fifo_data_o  (rxf_wdata),
+      .fifo_full_i  (rxf_full),
+      .active_o     (rx_active),
+      .byte_count_o (rx_bytes)
+  );
+
+  async_fifo #(.WIDTH(12), .DEPTH(64)) u_rx_fifo (
+      .wclk    (mii_rx_clk),
+      .wrst    (rst),
+      .wr_en   (rxf_wr),
+      .wr_data (rxf_wdata),
+      .wfull   (rxf_full),
+      .rclk    (clk),
+      .rrst    (rst),
+      .rd_en   (rxf_rd),
+      .rd_data (rxf_rdata),
+      .rempty  (rxf_empty)
+  );
+
+  ie_ru u_ru (
+      .clk             (clk),
+      .rst             (rst),
+      .core_rst_i      (core_rst),
+      .cbbase_i        (cbbase),
+      .scb_addr_i      (scb_base),
+      .start_i         (ru_start),
+      .start_rfa_i     (ru_rfa),
+      .resume_i        (ru_resume),
+      .suspend_i       (ru_suspend),
+      .abort_i         (ru_abort),
+      .rus_o           (ru_rus),
+      .ev_fr_o         (ev_fr),
+      .ev_rnr_o        (ev_rnr),
+      .ia_addr_i       (ia_addr),
+      .promisc_i       (cfg_bytes[64]),
+      .no_bcast_i      (cfg_bytes[65]),
+      .save_bad_i      (cfg_bytes[23]),
+      .min_frame_len_i (cfg_bytes[87:80]),
+      .rx_empty_i      (rxf_empty),
+      .rx_data_i       (rxf_rdata),
+      .rx_rd_o         (rxf_rd),
+      .bus_req_o       (ru_req),
+      .bus_we_o        (ru_we),
+      .bus_byte_o      (ru_byte),
+      .bus_addr_o      (ru_addr),
+      .bus_wdata_o     (ru_wdata),
+      .bus_ack_i       (ru_ack),
+      .bus_rdata_i     (bus_rdata),
+      .bus_err_i       (ru_err)
+  );
+
   wb_arb u_arb (
       .clk        (clk),
       .rst        (rst),
@@ -188,13 +272,20 @@ module wish82586 #(
       .p0_wdata_i (scb_wdata),
       .p0_ack_o   (scb_ack),
       .p0_err_o   (scb_err),
-      .p1_req_i   (cu_req),
-      .p1_we_i    (cu_we),
-      .p1_byte_i  (cu_byte),
-      .p1_addr_i  (cu_addr),
-      .p1_wdata_i (cu_wdata),
-      .p1_ack_o   (cu_ack),
-      .p1_err_o   (cu_err),
+      .p1_req_i   (ru_req),
+      .p1_we_i    (ru_we),
+      .p1_byte_i  (ru_byte),
+      .p1_addr_i  (ru_addr),
+      .p1_wdata_i (ru_wdata),
+      .p1_ack_o   (ru_ack),
+      .p1_err_o   (ru_err),
+      .p2_req_i   (cu_req),
+      .p2_we_i    (cu_we),
+      .p2_byte_i  (cu_byte),
+      .p2_addr_i  (cu_addr),
+      .p2_wdata_i (cu_wdata),
+      .p2_ack_o   (cu_ack),
+      .p2_err_o   (cu_err),
       .rdata_o    (bus_rdata),
       .req_o      (bus_req),
       .we_o       (bus_we),
@@ -232,7 +323,7 @@ module wish82586 #(
   );
 
   // ---------------------------------------------------------------------------
-  // The MAC datapath is still to be written, so the PHY side stays quiet.
+  // The transmit datapath is still to be written, so nothing goes out.
   // ---------------------------------------------------------------------------
   assign mii_txd   = '0;
   assign mii_tx_en = 1'b0;
@@ -246,8 +337,8 @@ module wish82586 #(
   // ia_addr and cfg_bytes are already captured from the IA-SETUP and CONFIGURE
   // commands and are waiting for the transmit and receive paths to use them.
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, mii_tx_clk, mii_rx_clk, mii_rxd, mii_rx_dv, mii_rx_er,
-                   mii_crs, mii_col, mdio_i, ia_addr, cfg_bytes};
+  wire _unused = &{1'b0, mii_tx_clk, mii_crs, mii_col, mdio_i, cfg_bytes,
+                   rx_active, rx_bytes};
   // verilator lint_on UNUSED
 
 endmodule

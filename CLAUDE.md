@@ -29,9 +29,9 @@ change anything in `wish82586_pkg.sv` or `i82586.h`, that test is what stops
 the testbench and the RTL from quietly agreeing with each other and with
 nothing else.
 
-The MAC itself is mostly unwritten.  The verification infrastructure is
-finished and the system-level tests are already there, marked pending.  Work
-proceeds test first: pick a pending test, implement the RTL, drop the marker.
+Receive works; transmit is the part still missing.  The system-level tests for
+it are already written and marked pending.  Work proceeds test first: pick a
+pending test, implement the RTL, drop the marker.
 
 ## Commands
 
@@ -66,28 +66,49 @@ expectations from the RTL.
 
 ### RTL (`src/`)
 
-`wish82586.sv` is the top: it instantiates `wb_csr`, `ie_core` and `wb_master`,
-and holds the TODO block listing what still has to be built (command unit,
-receive unit, TX/RX datapath).  Everything the core does not drive yet is tied
+`wish82586.sv` is the top: it instantiates the control registers, the SCB
+handler, the command and receive units, the receive front end and the memory
+port, and holds the TODO block listing what still has to be built (the
+transmit datapath).  Everything the core does not drive yet is tied
 off there, including a `_unused` sink that keeps the linter quiet - shrink it
 as signals get consumed.
 
 Working blocks: `wb_csr` (control registers), `ie_core` (initialisation
-sequencer and SCB handler), `wb_master` (24-bit 8/16-bit accesses onto the
-32-bit Wishbone port), `crc32_eth` (Ethernet FCS, `DATA_W` 4 for MII or 8),
-`sync_fifo`.
+sequencer and SCB handler), `ie_cu` (command unit), `ie_ru` (receive unit),
+`mii_rx` (MII receive front end), `wb_master` (24-bit 8/16-bit accesses onto
+the 32-bit Wishbone port), `wb_arb` (three-way port sharing), `crc32_eth`
+(Ethernet FCS, `DATA_W` 4 for MII or 8), `sync_fifo`, `async_fifo`.
+
+`mii_rx` runs in the PHY's receive clock domain and is the only thing that
+does; everything crossing to the system clock goes through `async_fifo`.  Its
+FIFO word is `{end, err[2:0], data[7:0]}`: data words carry frame bytes, and a
+single end word closes the frame and reports a bad FCS, a dribble nibble or an
+overrun.
 
 Blocks reach memory through `wb_master`'s internal port: hold `req_i` with the
 address until `ack_o` pulses for one cycle.  `ie_core` drives it from a
 combinational request decode plus a sequential state machine - follow that
 shape for the units still to come, and note that `wb_master` refuses a new
 request during its own `ack_o` cycle so a state can safely hold `req_i` high
-across the handover.  There is exactly one master port today; a second
-requester needs an arbiter in front of it.
+across the handover.  `wb_arb` shares that one port between the SCB handler,
+the receive unit and the command unit, in that priority order - the receive
+unit comes before the command unit because it cannot ask the wire to wait.
 
-Ordering that matters: `ie_core` writes the SCB status back *before* clearing
-the SCB command word, so a driver that polls the command word and then reads
-the status never sees stale bits.
+Ordering that matters, all of it learned from tests that failed:
+
+* `ie_core` writes the SCB status back *before* clearing the SCB command word,
+  so a driver that polls the command word and then reads the status never sees
+  stale bits.
+* The interrupt follows `status_pub` - what the chip has actually written to
+  memory - never the internal flags, so a driver woken by it always finds the
+  status already there.
+* Whether a status write is owed is decided by comparing what is published
+  with what is current, not by a dirty flag.  A flag gets cleared by a write
+  that carried a value latched before the units reacted, and the change is
+  lost.
+* Events do not arrive together: a command completing raises CX and the
+  command unit going idle raises CNA a moment later.  Acknowledging once is
+  not enough, which is why `IeDriver::ack_all()` loops.
 
 The real 82586 has no software-visible registers, only RESET, CA and INT pins.
 `wb_csr` exposes those as a small Wishbone slave, and makes the SCP address

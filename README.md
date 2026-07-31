@@ -8,9 +8,9 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 
 ## Status
 
-The verification infrastructure is in place.  The chip comes up, runs command
-lists and accepts its address and configuration; what is missing is the part
-that puts frames on the wire.
+The chip comes up, runs command lists, and receives: frames off the wire are
+filtered, checked and filed into the host's descriptor rings.  What is missing
+is transmit.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
@@ -18,11 +18,14 @@ that puts frames on the wire.
 | Wishbone master (`wb_master`)             | done, tested               |
 | init sequencer and SCB handler (`ie_core`)| done, tested               |
 | command unit (`ie_cu`)                    | NOP, IA-SETUP, CONFIGURE   |
+| receive unit (`ie_ru`)                    | done, tested               |
+| MII receive front end (`mii_rx`)          | done, tested               |
+| clock crossing (`async_fifo`)             | done, tested               |
 | memory arbiter (`wb_arb`)                 | done, tested               |
 | Ethernet FCS (`crc32_eth`)                | done, tested               |
 | synchronous FIFO (`sync_fifo`)            | done, tested               |
-| receive unit                              | to do                      |
-| transmit / receive datapath, MII          | to do                      |
+| transmit datapath and MII transmit        | to do                      |
+| multicast address filtering               | to do                      |
 | GMII                                      | later                      |
 
 The system-level tests for everything in the "to do" list are already written

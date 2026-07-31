@@ -69,6 +69,22 @@ module tb_top (
     output logic [31:0] crc8_fcs,
     output logic        crc8_ok,
 
+    // ---- unit test: MII receive front end ----------------------------------
+    // Fed by the same pins the DUT sees, so it observes the same stimulus.
+    output logic        rxfe_wr,
+    output logic [11:0] rxfe_data,
+    input  logic        rxfe_full,
+    output logic        rxfe_active,
+    output logic [15:0] rxfe_bytes,
+
+    // ---- unit test: dual clock FIFO, written from the PHY clock ------------
+    input  logic        afifo_wr_en,
+    input  logic [11:0] afifo_wr_data,
+    output logic        afifo_wfull,
+    input  logic        afifo_rd_en,
+    output logic [11:0] afifo_rd_data,
+    output logic        afifo_rempty,
+
     // ---- unit test: synchronous FIFO --------------------------------------
     input  logic        fifo_flush,
     input  logic        fifo_wr_en,
@@ -138,6 +154,32 @@ module tb_top (
       .crc_o    (crc8_crc),
       .fcs_o    (crc8_fcs),
       .crc_ok_o (crc8_ok)
+  );
+
+  mii_rx u_rxfe (
+      .rx_clk       (dut_mii_rx_clk),
+      .rst          (rst),
+      .rxd          (dut_mii_rxd),
+      .rx_dv        (dut_mii_rx_dv),
+      .rx_er        (dut_mii_rx_er),
+      .fifo_wr_o    (rxfe_wr),
+      .fifo_data_o  (rxfe_data),
+      .fifo_full_i  (rxfe_full),
+      .active_o     (rxfe_active),
+      .byte_count_o (rxfe_bytes)
+  );
+
+  async_fifo #(.WIDTH(12), .DEPTH(16)) u_afifo (
+      .wclk    (dut_mii_rx_clk),
+      .wrst    (rst),
+      .wr_en   (afifo_wr_en),
+      .wr_data (afifo_wr_data),
+      .wfull   (afifo_wfull),
+      .rclk    (clk),
+      .rrst    (rst),
+      .rd_en   (afifo_rd_en),
+      .rd_data (afifo_rd_data),
+      .rempty  (afifo_rempty)
   );
 
   sync_fifo #(.WIDTH(8), .DEPTH(16)) u_fifo (

@@ -137,12 +137,19 @@ struct Config {
 };
 
 // A receive frame recovered by walking the receive frame area.
+//
+// With AL-LOC = 1 - what both the Sun ROM and the NetBSD drivers configure,
+// and the default here - the whole frame including its MAC header lands in the
+// buffers and the address fields of the descriptor are left alone.  With
+// AL-LOC = 0 the chip splits the header out into the descriptor instead.
+// Either way dst, src, type_len and data below are the frame as sent.
 struct RxFrame {
   uint16_t rfd_off = 0;
   uint16_t status = 0;
   MacAddr dst, src;
   uint16_t type_len = 0;
-  Bytes data;             // buffer contents, FCS excluded unless the MAC kept it
+  Bytes data;             // payload; the FCS is stripped by the MAC
+  Bytes raw;              // exactly what the buffers hold
   bool ok() const { return (status & RFD_ST_OK) != 0; }
   bool complete() const { return (status & RFD_ST_C) != 0; }
   std::string str() const;
@@ -214,7 +221,8 @@ class MemImage {
   const std::vector<uint16_t>& rfds() const { return rfd_offs_; }
 
   // Walks the receive frame area and returns every completed frame.
-  std::vector<RxFrame> collect_rx();
+  // addr_in_buffer must match the AL-LOC bit the chip was configured with.
+  std::vector<RxFrame> collect_rx(bool addr_in_buffer = true);
   // Marks the frames returned by collect_rx() as free again and relinks them
   // at the end of the list, the way a driver recycles descriptors.
   void recycle_rx();

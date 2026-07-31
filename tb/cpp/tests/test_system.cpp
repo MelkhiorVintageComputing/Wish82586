@@ -206,7 +206,7 @@ TEST_PENDING(sys_transmit_retries_after_collision,
 // Receive
 // ---------------------------------------------------------------------------
 
-TEST_PENDING(sys_receive_one_frame, "the receive path is not implemented") {
+TEST(sys_receive_one_frame) {
   bring_up(env);
 
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(200, 6));
@@ -223,8 +223,7 @@ TEST_PENDING(sys_receive_one_frame, "the receive path is not implemented") {
   CHECK_EQ(env.img().scb_status() & ie::SCB_ST_FR, ie::SCB_ST_FR);
 }
 
-TEST_PENDING(sys_receive_filters_by_address,
-             "the address filter is not implemented") {
+TEST(sys_receive_filters_by_address) {
   bring_up(env);
 
   EthFrame mine(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 7));
@@ -245,8 +244,7 @@ TEST_PENDING(sys_receive_filters_by_address,
   CHECK_EQ(rx[1].dst, bcast.dst);
 }
 
-TEST_PENDING(sys_receive_discards_bad_fcs,
-             "the receive path is not implemented") {
+TEST(sys_receive_discards_bad_fcs) {
   bring_up(env);
 
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 10));
@@ -258,7 +256,7 @@ TEST_PENDING(sys_receive_discards_bad_fcs,
   CHECK_EQ(env.img().scb_crc_errs(), uint16_t(1));
 }
 
-TEST_PENDING(sys_receive_chains_buffers, "the receive path is not implemented") {
+TEST(sys_receive_chains_buffers) {
   // Small buffers force the receive unit to chain descriptors for one frame.
   env.img().build_init_structures();
   CHECK_DRV(env.drv().init());
@@ -276,7 +274,7 @@ TEST_PENDING(sys_receive_chains_buffers, "the receive path is not implemented") 
   CHECK_EQ(rx[0].data, f.payload);
 }
 
-TEST_PENDING(sys_receive_back_to_back, "the receive path is not implemented") {
+TEST(sys_receive_back_to_back) {
   bring_up(env);
 
   std::vector<EthFrame> sent;
@@ -297,8 +295,7 @@ TEST_PENDING(sys_receive_back_to_back, "the receive path is not implemented") {
   }
 }
 
-TEST_PENDING(sys_receive_out_of_resources,
-             "the receive path is not implemented") {
+TEST(sys_receive_out_of_resources) {
   // One descriptor, two frames: the second one has nowhere to go and the
   // receive unit must report no resources rather than corrupt memory.
   CHECK_DRV(env.drv().init());

@@ -46,6 +46,17 @@ module ie_core (
     input  logic        ev_cx_i,
     input  logic        ev_cna_i,
 
+    // ---- receive unit ------------------------------------------------------
+    output logic [23:0] scb_addr_o,
+    output logic        ru_start_o,
+    output logic [15:0] ru_rfa_o,
+    output logic        ru_resume_o,
+    output logic        ru_suspend_o,
+    output logic        ru_abort_o,
+    input  logic [2:0]  rus_i,
+    input  logic        ev_fr_i,
+    input  logic        ev_rnr_i,
+
     // ---- memory port (see wb_master) --------------------------------------
     output logic        bus_req_o,
     output logic        bus_we_o,
@@ -67,6 +78,7 @@ module ie_core (
   localparam logic [23:0] SCB_STATUS  = 24'd0;
   localparam logic [23:0] SCB_CMD     = 24'd2;
   localparam logic [23:0] SCB_CBL     = 24'd4;
+  localparam logic [23:0] SCB_RFA     = 24'd6;
 
   // Software reset lives in the SCB command word; see doc/interface.md.
   localparam int SCB_CMD_RESET_BIT = wish82586_pkg::SCB_CMD_RESET;
@@ -83,6 +95,7 @@ module ie_core (
     S_IDLE,          // initialised, waiting for something to do
     S_SCB_RD_CMD,
     S_SCB_RD_CBL,
+    S_SCB_RD_RFA,
     S_SCB_WR_STATUS, // after a command word was taken
     S_SCB_CLR_CMD,
     S_WR_STATUS      // status changed on its own, publish it
@@ -94,14 +107,13 @@ module ie_core (
   logic [15:0] scb_cmd;
   logic [15:0] status_tx;   // the status word being written back
   logic [3:0]  flags;       // {CX, FR, CNA, RNR} as the chip knows them
-  logic [3:0]  flags_pub;   // ... and as the host can see them in memory
   logic        bus16;       // SCP bus width byte, 0 => 16-bit host bus
   logic        ca_pending;
-  logic        status_dirty;
-  logic [2:0]  cus_q;
+  logic [15:0] status_pub;   // the status word the host can currently see
 
   wire [23:0] scb_addr = cbbase_o + {8'h00, scb_off};
   wire [2:0]  cuc      = bus_rdata_i[10:8];   // valid while the command is read
+  wire [2:0]  ruc      = bus_rdata_i[6:4];
 
   // Status word as the host will read it, for a given set of flags.
   // {CX, FR, CNA, RNR} at [15:12], CUS at [10:8], RUS at [6:4].
@@ -123,31 +135,28 @@ module ie_core (
     if (ack_apply) flags_next = flags_next & ~ack_mask;
     if (init_done) flags_next = flags_next | 4'b1010;   // CX, CNA
     if (ev_cx_i)   flags_next[3] = 1'b1;
+    if (ev_fr_i)   flags_next[2] = 1'b1;
     if (ev_cna_i)  flags_next[1] = 1'b1;
+    if (ev_rnr_i)  flags_next[0] = 1'b1;
   end
 
   wire status_written = bus_ack_i && ((state == S_SCB_WR_STATUS) ||
                                       (state == S_WR_STATUS));
 
+  // What the chip knows, versus what it has actually put in memory.  Comparing
+  // the two is what decides whether a status write is owed: a flag would be
+  // cleared by a write that carried a value latched before the units reacted,
+  // and the change would be lost.
+  wire [15:0] status_now   = mk_status(flags);
+  wire        status_stale = (status_pub != status_now);
+
   always_ff @(posedge clk) begin
     if (rst || core_rst_i) begin
-      flags     <= 4'h0;
-      flags_pub <= 4'h0;
+      flags      <= 4'h0;
+      status_pub <= 16'h0;
     end else begin
       flags <= (taking_cmd && bus_rdata_i[SCB_CMD_RESET_BIT]) ? 4'h0 : flags_next;
-      if (status_written) flags_pub <= status_tx[15:12];
-    end
-  end
-
-  // ---- something to publish? ----------------------------------------------
-  always_ff @(posedge clk) begin
-    if (rst || core_rst_i) begin
-      status_dirty <= 1'b0;
-      cus_q        <= 3'd0;
-    end else begin
-      cus_q <= cus_i;
-      if (ev_cx_i || ev_cna_i || (cus_i != cus_q)) status_dirty <= 1'b1;
-      else if (status_written)                     status_dirty <= 1'b0;
+      if (status_written) status_pub <= status_tx;
     end
   end
 
@@ -199,6 +208,10 @@ module ie_core (
         bus_req_o  = 1'b1;
         bus_addr_o = scb_addr + SCB_CBL;
       end
+      S_SCB_RD_RFA: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = scb_addr + SCB_RFA;
+      end
       S_SCB_CLR_CMD: begin
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
@@ -231,11 +244,20 @@ module ie_core (
       cu_resume_o  <= 1'b0;
       cu_suspend_o <= 1'b0;
       cu_abort_o   <= 1'b0;
+      ru_start_o   <= 1'b0;
+      ru_rfa_o     <= 16'h0;
+      ru_resume_o  <= 1'b0;
+      ru_suspend_o <= 1'b0;
+      ru_abort_o   <= 1'b0;
     end else begin
       cu_start_o   <= 1'b0;
       cu_resume_o  <= 1'b0;
       cu_suspend_o <= 1'b0;
       cu_abort_o   <= 1'b0;
+      ru_start_o   <= 1'b0;
+      ru_resume_o  <= 1'b0;
+      ru_suspend_o <= 1'b0;
+      ru_abort_o   <= 1'b0;
 
       if (ca_i) ca_pending <= 1'b1;
 
@@ -294,8 +316,8 @@ module ie_core (
           if (ca_pending) begin
             ca_pending <= 1'b0;
             state      <= S_SCB_RD_CMD;
-          end else if (status_dirty) begin
-            status_tx <= mk_status(flags_next);
+          end else if (status_stale) begin
+            status_tx <= status_now;
             state     <= S_WR_STATUS;
           end
 
@@ -308,18 +330,23 @@ module ie_core (
               // command word first so the host sees the command taken.
               state <= S_SCB_CLR_CMD;
             end else begin
-              // The command unit control field decides what ie_cu does next.
-              // TODO: bus_rdata_i[6:4] is the receive unit control field.
+              // The control fields decide what the two units do next.  A
+              // start needs its list pointer fetching first.
               case (cuc)
-                wish82586_pkg::CUC_START: begin
-                  state <= S_SCB_RD_CBL;
-                end
                 wish82586_pkg::CUC_RESUME:  cu_resume_o  <= 1'b1;
                 wish82586_pkg::CUC_SUSPEND: cu_suspend_o <= 1'b1;
                 wish82586_pkg::CUC_ABORT:   cu_abort_o   <= 1'b1;
                 default: ;
               endcase
-              if (cuc != wish82586_pkg::CUC_START) state <= S_SCB_WR_STATUS;
+              case (ruc)
+                wish82586_pkg::RUC_RESUME:  ru_resume_o  <= 1'b1;
+                wish82586_pkg::RUC_SUSPEND: ru_suspend_o <= 1'b1;
+                wish82586_pkg::RUC_ABORT:   ru_abort_o   <= 1'b1;
+                default: ;
+              endcase
+              if (cuc == wish82586_pkg::CUC_START)      state <= S_SCB_RD_CBL;
+              else if (ruc == wish82586_pkg::RUC_START) state <= S_SCB_RD_RFA;
+              else                                     state <= S_SCB_WR_STATUS;
             end
           end
 
@@ -327,6 +354,14 @@ module ie_core (
           if (bus_ack_i) begin
             cu_cbl_o   <= bus_rdata_i;
             cu_start_o <= 1'b1;
+            state      <= (scb_cmd[6:4] == wish82586_pkg::RUC_START) ?
+                          S_SCB_RD_RFA : S_SCB_WR_STATUS;
+          end
+
+        S_SCB_RD_RFA:
+          if (bus_ack_i) begin
+            ru_rfa_o   <= bus_rdata_i;
+            ru_start_o <= 1'b1;
             state      <= S_SCB_WR_STATUS;
           end
 
@@ -347,11 +382,11 @@ module ie_core (
     end
   end
 
-  // The receive unit does not exist yet.
-  assign rus_o  = 3'd0;
-  assign cus_o  = cus_i;
+  assign rus_o      = rus_i;
+  assign cus_o      = cus_i;
+  assign scb_addr_o = scb_addr;
   assign busy_o = (state != S_IDLE) && (state != S_UNINIT);
-  assign int_o  = |flags_pub;
+  assign int_o  = |status_pub[15:12];
 
   // verilator lint_off UNUSED
   wire _unused = &{1'b0, bus_err_i, bus16, scb_cmd[14:0], scp_addr_i[31:24]};

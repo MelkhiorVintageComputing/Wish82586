@@ -280,7 +280,7 @@ uint16_t MemImage::build_rfa(int n_rfd, int n_rbd, size_t buf_size) {
   return rfa_off_;
 }
 
-std::vector<RxFrame> MemImage::collect_rx() {
+std::vector<RxFrame> MemImage::collect_rx(bool addr_in_buffer) {
   std::vector<RxFrame> out;
   collected_.clear();
   for (uint16_t rfd : rfd_offs_) {
@@ -291,10 +291,12 @@ std::vector<RxFrame> MemImage::collect_rx() {
     RxFrame f;
     f.rfd_off = rfd;
     f.status = st;
-    f.dst = MacAddr(mem_.read_block(a + 8, 6).data());
-    f.src = MacAddr(mem_.read_block(a + 14, 6).data());
-    Bytes t = mem_.read_block(a + 20, 2);
-    f.type_len = uint16_t((t[0] << 8) | t[1]);
+    if (!addr_in_buffer) {
+      f.dst = MacAddr(mem_.read_block(a + 8, 6).data());
+      f.src = MacAddr(mem_.read_block(a + 14, 6).data());
+      Bytes t = mem_.read_block(a + 20, 2);
+      f.type_len = uint16_t((t[0] << 8) | t[1]);
+    }
 
     // Follow the buffer descriptor chain until the end of frame marker.
     uint16_t rbd = mem_.rd16(a + 6);
@@ -304,10 +306,21 @@ std::vector<RxFrame> MemImage::collect_rx() {
       uint16_t cnt = mem_.rd16(ra + 0);
       uint32_t buf = mem_.rd24(ra + 4);
       Bytes chunk = mem_.read_block(buf, cnt & RBD_COUNT_MASK);
-      f.data.insert(f.data.end(), chunk.begin(), chunk.end());
+      f.raw.insert(f.raw.end(), chunk.begin(), chunk.end());
       if (cnt & RBD_EOF) break;
       if (!(cnt & RBD_F)) break;  // the chip has not filled this one yet
       rbd = mem_.rd16(ra + 2);
+    }
+
+    if (addr_in_buffer) {
+      // The header is at the front of the buffer contents.
+      if (f.raw.size() >= 6) f.dst = MacAddr(f.raw.data());
+      if (f.raw.size() >= 12) f.src = MacAddr(f.raw.data() + 6);
+      if (f.raw.size() >= 14)
+        f.type_len = uint16_t((f.raw[12] << 8) | f.raw[13]);
+      if (f.raw.size() > 14) f.data.assign(f.raw.begin() + 14, f.raw.end());
+    } else {
+      f.data = f.raw;
     }
     out.push_back(f);
     collected_.push_back(rfd);
