@@ -76,8 +76,12 @@ def build(args):
 
     cmd = [
         args.qemu,
-        "-M", "isapc",              # a plain ISA PC: that is where an 82586 card lives
-        "-m", "64",
+        # The pc machine, not isapc: qemu's isapc does not present an ATAPI
+        # CD-ROM on its ISA IDE, so the installer boots in a loop looking for
+        # its root.  pc still has an ISA bus hanging off the LPC bridge, which
+        # is where the 82586 card will go, so nothing is given up by using it.
+        "-M", "pc",
+        "-m", "256",              # the install ramdisk does not fit in 64
         "-drive", "file=%s,format=qcow2,if=ide,index=0" % image,
         "-drive", "file=%s,format=raw,if=ide,index=2,media=cdrom" % iso,
         "-boot", "d",
@@ -216,6 +220,7 @@ def main():
     p.add_argument("--iso", default="NetBSD-10.1-i386-boot-com.iso")
     p.add_argument("--image", default=None)
     p.add_argument("--size", default="4G")
+    p.add_argument("--memory", default="256")
     p.add_argument("--minimal", action="store_true", default=True,
                    help="base and kernel sets only")
     p.add_argument("--full", dest="minimal", action="store_false")

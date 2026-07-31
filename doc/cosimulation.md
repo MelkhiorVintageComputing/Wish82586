@@ -42,6 +42,13 @@ NetBSD **10.1**/i386, installed from `boot-com.iso`, the serial console
 install image.  Serial rather than VGA because the install has to be driven by
 a script and the whole thing has to run without a display.
 
+The QEMU machine is `pc`, not `isapc`.  `isapc` looks like the obvious choice
+for an ISA card, but its ISA IDE never presents an ATAPI CD-ROM: the installer
+boots, probes, finds no root and resets, over and over.  `pc` has a working
+IDE and still has an ISA bus hanging off its LPC bridge, which is where the
+82586 card goes, so nothing is given up by using it.  256 MB of memory,
+because the install ramdisk does not fit in 64.
+
 ## What is and is not in git
 
 In git: the scripts that build QEMU and create the disk image, any patch

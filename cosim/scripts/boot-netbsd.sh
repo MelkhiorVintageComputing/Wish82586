@@ -10,8 +10,8 @@ qemu="$(qemu_bin)"
 say "booting $DISK_IMAGE with $qemu"
 
 exec "$qemu" \
-    -M isapc \
-    -m 64 \
+    -M pc \
+    -m 256 \
     -drive "file=$DISK_IMAGE,format=qcow2,if=ide,index=0" \
     -boot c \
     -nographic \
