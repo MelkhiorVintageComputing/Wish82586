@@ -140,61 +140,67 @@ def run_sysinst(inst, args):
     """Answers whatever screen sysinst puts up, until the install is done.
 
     Driving sysinst blind, a fixed sequence of answers is always one surprise
-    behind: screens are optional, their order shifts, and the letters move.
-    So this is a table instead - each entry is something that might appear and
-    what to do about it - and the loop just keeps answering until the install
-    says it has finished.  Adding support for a new release usually means one
+    behind: screens are optional, their order shifts with the state of the
+    disk, and the menu letters move between screens.  So this is a table -
+    each row is something that might appear and what to do about it - and the
+    loop answers whatever comes up.  Supporting a new release is usually one
     more row.
+
+    Where the pattern is the menu line itself, it captures the letter and the
+    answer is that letter: matching a line and then searching for it again
+    would look past the match and find the wrong entry.  Where the pattern is
+    the question above a menu, the answer is found by searching forward.
     """
     done = ["no"]
 
-    def pick(label):
-        return lambda: inst.choose(label)
+    def letter():
+        inst.line(inst.child.match.group(1).decode())
 
     def enter():
         inst.line("")
 
     def finish():
+        inst.line(inst.child.match.group(1).decode())
         done[0] = "yes"
 
-    # Ordered: the first pattern that matches wins, so put the specific ones
-    # above the general ones.
+    def find(label):
+        return lambda: inst.choose(label)
+
+    want_sets = "Minimal installation" if args.minimal else "Full installation"
+
+    # First match wins, so the specific rows come before the general ones.
     table = [
-        (br"Terminal type",                      enter),
-        (br"Installation messages in English",   pick("Installation messages in English")),
-        (br"Install NetBSD to hard disk",        pick("Install NetBSD to hard disk")),
-        (br"partitioning scheme",                pick("Master Boot Record")),
-        (br"This is the correct geometry",       pick("This is the correct geometry")),
-        (br"Use the entire disk",                pick("Use the entire disk")),
-        (br"install the NetBSD bootcode",        pick("Yes")),
-        (br"Use existing partition sizes",       pick("Use existing partition sizes")),
-        (br"Partition sizes ok",                 pick("Partition sizes ok")),
-        (br"name for your NetBSD disk",          enter),
-        (br"Minimal installation",
-            pick("Minimal installation") if args.minimal else pick("Full installation")),
-        (br"CD-ROM",                             pick("CD-ROM")),
-        (br"([a-z]):\s*Continue",                pick("Continue")),
-        (br"Finished configuring",               pick("Finished configuring")),
-        (br"Configure network",                  pick("Finished configuring")),
-        (br"Exit Install System",                finish),
-        (br"Hit enter to continue",              enter),
-        # sysinst asks this both to start and after each destructive step.
-        (br"([a-z]):\s*Yes",                     pick("Yes")),
-        (br"[Ss]hall we continue",               pick("Yes")),
-        (br"#\s",                                finish),
+        (br"Terminal type",                                    enter),
+        (br"([a-z]):\s*Installation messages in English",      letter),
+        (br"([a-z]):\s*Install NetBSD to hard disk",           letter),
+        (br"partitioning scheme",                  find("Master Boot Record")),
+        (br"([a-z]):\s*This is the correct geometry",          letter),
+        (br"([a-z]):\s*Use the entire disk",                   letter),
+        (br"install the NetBSD bootcode",                      find("Yes")),
+        (br"([a-z]):\s*Use existing partition sizes",          letter),
+        (br"([a-z]):\s*Partition sizes ok",                    letter),
+        (br"name for your NetBSD disk",                        enter),
+        (br"([a-z]):\s*" + want_sets.encode(),                 letter),
+        (br"([a-z]):\s*CD-ROM",                                letter),
+        (br"([a-z]):\s*Continue",                              letter),
+        (br"([a-z]):\s*Finished configuring",                  letter),
+        (br"Configure network",                    find("Finished configuring")),
+        (br"([a-z]):\s*Exit Install System",                   finish),
+        (br"Hit enter to continue",                            enter),
+        (br"([a-z]):\s*Yes",                                   letter),
+        (br"[Ss]hall we continue",                             find("Yes")),
+        (br"#\s",                                              enter),
     ]
 
     patterns = [p for p, _ in table]
     seen = {}
-    for step in range(200):
+    for step in range(300):
         idx = inst.wait(patterns, timeout=3600, what="any sysinst screen")
-        label = patterns[idx][:40].decode("ascii", "replace")
-        # A screen that comes back many times means an answer is not being
-        # accepted; stopping beats spinning until the timeout.
+        name = patterns[idx][:44].decode("ascii", "replace")
         seen[idx] = seen.get(idx, 0) + 1
-        if seen[idx] > 12:
-            raise SystemExit("stuck answering %r; see the console log" % label)
-        print("   [%d] %s" % (step, label))
+        if seen[idx] > 15:
+            raise SystemExit("stuck on %r; see the console log" % name)
+        print("   [%d] %s" % (step, name))
         table[idx][1]()
         if done[0] == "yes":
             break
@@ -202,8 +208,7 @@ def run_sysinst(inst, args):
         raise SystemExit("the installer never finished; see the console log")
 
     print("== halting the guest")
-    inst.wait([br"#\s", br"Exit Install System"], timeout=600, what="a shell prompt")
-    inst.line("")
+    inst.wait([br"#\s"], timeout=900, what="a shell prompt")
     inst.line("halt -p")
     time.sleep(10)
     inst.child.close(force=True)

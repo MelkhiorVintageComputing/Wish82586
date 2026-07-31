@@ -23,7 +23,7 @@ if [ ! -f build.ninja ]; then
         --disable-docs --disable-guest-agent
         --disable-tools
     )
-    if pkg-config --exists libslirp; then
+    if pkg-config --exists slirp; then
         opts+=(--enable-slirp)
     else
         warn "no libslirp: this build will have no -netdev user"

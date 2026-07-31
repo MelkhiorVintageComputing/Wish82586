@@ -36,7 +36,7 @@ echo "Libraries:"
 need_pc  glib-2.0     libglib2.0-dev "QEMU core"
 need_pc  pixman-1     libpixman-1-dev "QEMU display"
 need_pc  zlib         zlib1g-dev     "QEMU core"
-need_pc  libslirp     libslirp-dev   "user mode networking; QEMU 7.2 no longer bundles it"
+need_pc  slirp        libslirp-dev   "user mode networking; QEMU 7.2 no longer bundles it"
 
 echo "Python:"
 need_py  venv         python3-venv   "QEMU's build scripts"
