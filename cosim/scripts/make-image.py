@@ -47,6 +47,21 @@ class Installer:
         except pexpect.EOF:
             raise SystemExit("QEMU exited while waiting for %s" % (what or patterns))
 
+    def drain(self, quiet=1.2):
+        """Swallows whatever is still arriving, up to a quiet period.
+
+        sysinst paints a whole screen at a time, and a menu holds every one of
+        its entries at once.  Without this, the text left in the buffer after
+        an answer is matched against the next time round, and an entry further
+        down the screen just answered gets picked - which is how "install to
+        hard disk" was followed by "exit install system", both being lines of
+        the same menu.
+        """
+        try:
+            self.child.expect(pexpect.TIMEOUT, timeout=quiet)
+        except pexpect.EOF:
+            pass
+
     def send(self, text, delay=0.3):
         time.sleep(delay)
         self.child.send(text)
@@ -159,9 +174,20 @@ def run_sysinst(inst, args):
     def enter():
         inst.line("")
 
+    extracted = ["no"]
+
     def finish():
+        # "Exit Install System" is also a line on the main menu, so it only
+        # means the end once the sets have actually gone in.
+        if extracted[0] != "yes":
+            inst.choose("Install NetBSD to hard disk")
+            return
         inst.line(inst.child.match.group(1).decode())
         done[0] = "yes"
+
+    def note_extracted():
+        extracted[0] = "yes"
+        inst.line("")
 
     def find(label):
         return lambda: inst.choose(label)
@@ -186,7 +212,7 @@ def run_sysinst(inst, args):
         (br"([a-z]):\s*Finished configuring",                  letter),
         (br"Configure network",                    find("Finished configuring")),
         (br"([a-z]):\s*Exit Install System",                   finish),
-        (br"Hit enter to continue",                            enter),
+        (br"Hit enter to continue",                            note_extracted),
         (br"([a-z]):\s*Yes",                                   letter),
         (br"[Ss]hall we continue",                             find("Yes")),
         (br"#\s",                                              enter),
@@ -202,6 +228,7 @@ def run_sysinst(inst, args):
             raise SystemExit("stuck on %r; see the console log" % name)
         print("   [%d] %s" % (step, name))
         table[idx][1]()
+        inst.drain()
         if done[0] == "yes":
             break
     else:
