@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
 //
-// MII PHY bus functional model.
+// MII / GMII PHY bus functional model.
 //
-// The PHY owns TX_CLK and RX_CLK (25 MHz at 100 Mb/s, 2.5 MHz at 10 Mb/s) and
-// they are deliberately not phase aligned, so the MAC cannot get away with
-// treating them as one clock.
+// The PHY owns TX_CLK and RX_CLK - 25 MHz at 100 Mb/s, 2.5 MHz at 10 Mb/s,
+// 125 MHz for GMII - and they are deliberately not phase aligned, so the MAC
+// cannot get away with treating them as one clock.  (A real GMII MAC sources
+// its own transmit clock; here the model drives it either way, which is the
+// same thing as far as the RTL can tell.)
+//
+// A "symbol" below is what crosses the interface in one clock: a nibble on
+// MII, a whole byte on GMII.
 //
 //   RX: frames queued with inject() are sent preamble + SFD + data + FCS.
 //       Malformed traffic is available too: bad FCS, dribble nibbles, runts,
@@ -39,10 +44,12 @@ struct MiiPorts {
   uint8_t* col = nullptr;     // driven by the model
 };
 
-// Reassembles a nibble stream (preamble + SFD + frame) into a WireFrame.
+// Reassembles a symbol stream (preamble + SFD + frame) into a WireFrame.
 class NibbleCapture {
  public:
-  void feed(bool dv, uint8_t nibble, bool err, u64 time_ps);
+  explicit NibbleCapture(int width = 4) : width_(width) {}
+  void set_width(int width) { width_ = width; }
+  void feed(bool dv, uint8_t sym, bool err, u64 time_ps);
   bool empty() const { return done_.empty(); }
   size_t count() const { return done_.size(); }
   WireFrame pop();
@@ -52,6 +59,7 @@ class NibbleCapture {
  private:
   void finish(u64 time_ps);
 
+  int width_ = 4;
   bool active_ = false;
   std::vector<uint8_t> nibbles_;
   bool err_ = false;
@@ -61,9 +69,13 @@ class NibbleCapture {
 
 class MiiPhy {
  public:
-  enum class Speed { M10, M100 };
+  // The interface the model speaks.  G1000 is GMII: eight bits at 125 MHz.
+  enum class Speed { M10, M100, G1000 };
 
   MiiPhy(Sim& sim, MiiPorts ports, Speed speed = Speed::M100);
+
+  int width() const { return width_; }
+  bool is_gmii() const { return width_ == 8; }
 
   Sim::Clock* tx_clock() const { return tx_clk_; }
   Sim::Clock* rx_clock() const { return rx_clk_; }
@@ -73,8 +85,13 @@ class MiiPhy {
   void inject(const EthFrame& f);            // adds a correct FCS
   void inject_bad_fcs(const EthFrame& f);    // corrupts the FCS
   void inject_wire(const Bytes& wire);       // exactly these bytes, FCS included
-  void inject_nibbles(const std::vector<uint8_t>& nibbles,
-                      int preamble_nibbles = 16);
+  // Raw symbols, preamble included automatically.  Used to build traffic the
+  // frame level cannot express, such as a frame that ends half way through a
+  // byte on MII.
+  void inject_symbols(const std::vector<uint8_t>& symbols,
+                      int preamble_symbols = -1);
+  // Splits a byte stream into interface symbols, low nibble first on MII.
+  std::vector<uint8_t> to_symbols(const Bytes& wire) const;
   void set_next_rx_error(int nibble_index) { rx_er_nibble_ = nibble_index; }
   void set_ipg_nibbles(int n) { ipg_nibbles_ = n; }
   bool rx_busy() const { return rx_active_ || !rx_queue_.empty(); }
@@ -108,6 +125,7 @@ class MiiPhy {
   Sim::Clock* tx_clk_;
   Sim::Clock* rx_clk_;
   u64 nibble_ps_;
+  int width_;
 
   // receive
   std::deque<std::vector<uint8_t>> rx_queue_;   // nibble streams, preamble included
@@ -134,8 +152,8 @@ class MiiPhy {
   int collisions_ = 0;
 };
 
-// Builds the nibble stream for a frame: preamble, SFD, then the bytes low
-// nibble first.
-std::vector<uint8_t> wire_to_nibbles(const Bytes& wire, int preamble_nibbles = 16);
+// Builds the symbol stream for a frame: preamble, SFD, then the frame itself.
+std::vector<uint8_t> wire_to_symbols(const Bytes& wire, int width,
+                                     int preamble_symbols = -1);
 
 }  // namespace wtb

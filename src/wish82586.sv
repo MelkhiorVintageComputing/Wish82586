@@ -11,6 +11,10 @@
 // contract the testbench in tb/ already drives - see doc/interface.md.
 
 module wish82586 #(
+    // 4 selects MII, 8 selects GMII.  With GMII the transmit clock is sourced
+    // by the MAC side: feed mii_tx_clk from the fabric's 125 MHz and take
+    // GTX_CLK from the same place.
+    parameter int PHY_DATA_W = 4,
     parameter int WB_DATA_W = 32,   // fixed at 32, see doc/interface.md
     parameter int WB_ADDR_W = 30   // word address lines, see doc/interface.md
 ) (
@@ -44,11 +48,11 @@ module wish82586 #(
 
     // ---- MII --------------------------------------------------------------
     input  logic                   mii_tx_clk,
-    output logic [3:0]             mii_txd,
+    output logic [PHY_DATA_W-1:0]  mii_txd,
     output logic                   mii_tx_en,
     output logic                   mii_tx_er,
     input  logic                   mii_rx_clk,
-    input  logic [3:0]             mii_rxd,
+    input  logic [PHY_DATA_W-1:0]  mii_rxd,
     input  logic                   mii_rx_dv,
     input  logic                   mii_rx_er,
     input  logic                   mii_crs,
@@ -247,7 +251,7 @@ module wish82586 #(
 
   // Receive path: front end in the PHY clock domain, FIFO across, receive unit
   // on the system clock.
-  mii_rx u_mii_rx (
+  mii_rx #(.DATA_W(PHY_DATA_W)) u_mii_rx (
       .rx_clk       (mii_rx_clk),
       .rst          (rst),
       .rxd          (mii_rxd),
@@ -402,7 +406,7 @@ module wish82586 #(
       .rd_data (tx_ram_rdata)
   );
 
-  mii_tx u_mii_tx (
+  mii_tx #(.DATA_W(PHY_DATA_W)) u_mii_tx (
       .tx_clk        (mii_tx_clk),
       .rst           (rst),
       .go_i          (tx_go),

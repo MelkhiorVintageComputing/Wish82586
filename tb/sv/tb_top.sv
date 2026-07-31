@@ -6,7 +6,9 @@
 // the entire testbench builds into a single binary.  Everything here is wiring
 // only - no behaviour.  Port names are what the C++ testbench references.
 
-module tb_top (
+module tb_top #(
+    parameter int PHY_DATA_W = 4     // 4 = MII, 8 = GMII
+) (
     input  logic        clk,
     input  logic        rst,
 
@@ -38,11 +40,11 @@ module tb_top (
 
     // ---- DUT: MII ---------------------------------------------------------
     input  logic        dut_mii_tx_clk,
-    output logic [3:0]  dut_mii_txd,
+    output logic [PHY_DATA_W-1:0] dut_mii_txd,
     output logic        dut_mii_tx_en,
     output logic        dut_mii_tx_er,
     input  logic        dut_mii_rx_clk,
-    input  logic [3:0]  dut_mii_rxd,
+    input  logic [PHY_DATA_W-1:0] dut_mii_rxd,
     input  logic        dut_mii_rx_dv,
     input  logic        dut_mii_rx_er,
     input  logic        dut_mii_crs,
@@ -96,7 +98,7 @@ module tb_top (
     output logic [4:0]  fifo_level
 );
 
-  wish82586 u_dut (
+  wish82586 #(.PHY_DATA_W(PHY_DATA_W)) u_dut (
       .clk        (clk),
       .rst        (rst),
       .wbs_cyc_i  (dut_wbs_cyc_i),
@@ -156,7 +158,7 @@ module tb_top (
       .crc_ok_o (crc8_ok)
   );
 
-  mii_rx u_rxfe (
+  mii_rx #(.DATA_W(PHY_DATA_W)) u_rxfe (
       .rx_clk       (dut_mii_rx_clk),
       .rst          (rst),
       .rxd          (dut_mii_rxd),

@@ -24,5 +24,8 @@ jobs:
       - name: Elaboration check (Yosys)
         run: make synth
 
-      - name: Regression
-        run: make test FLAGS=--no-colour
+      - name: Regression (MII)
+        run: make test PHY=mii FLAGS=--no-colour
+
+      - name: Regression (GMII)
+        run: make test PHY=gmii FLAGS=--no-colour

@@ -22,13 +22,20 @@ class Vtb_top;
 
 namespace wtb {
 
+// Set by the build: 4 for MII, 8 for GMII.  See the PHY variable in the
+// Makefile.
+#ifndef PHY_DATA_W
+#define PHY_DATA_W 4
+#endif
+
 struct EnvConfig {
   u64 sys_period_ps = 20 * NS;         // 50 MHz system clock
   size_t mem_size = 1u << 20;          // 1 MiB of shared memory at address 0
   uint32_t mem_base = 0;
   uint32_t cbbase = 0x0000'2000;       // control blocks live here
   uint32_t scp_addr = 0x000f'fff6;     // 0xFFFFF6 truncated into the model memory
-  MiiPhy::Speed speed = MiiPhy::Speed::M100;
+  MiiPhy::Speed speed =
+      (PHY_DATA_W == 8) ? MiiPhy::Speed::G1000 : MiiPhy::Speed::M100;
   int mem_wait_states = 0;
 };
 

@@ -137,8 +137,10 @@ TEST(infra_mii_rx_stream) {
   CHECK_MSG(w.fcs_ok, "the PHY model computed a wrong FCS");
   CHECK_EQ(w.data, f.to_wire(true, true));
 
-  // 100 byte payload => 118 byte frame, 8 preamble bytes: 252 nibbles at 40 ns.
-  const u64 expected = 252 * env.phy().nibble_time_ps();
+  // 100 byte payload => 118 byte frame, plus 8 bytes of preamble, in whatever
+  // symbols this interface uses.
+  const size_t syms = (env.phy().width() == 4) ? (126 * 2) : 126;
+  const u64 expected = syms * env.phy().nibble_time_ps();
   CHECK(w.end_ps - w.start_ps >= expected - 2 * env.phy().nibble_time_ps());
 }
 
@@ -150,18 +152,16 @@ TEST(infra_mii_error_injection) {
   CHECK(!bad.fcs_ok);
   CHECK_EQ(bad.data.size(), f.to_wire(true, true).size());
 
-  // A dribble nibble: an odd number of nibbles in the frame.
-  Bytes wire = f.to_wire(true, true);
-  std::vector<uint8_t> nibbles;
-  for (uint8_t b : wire) {
-    nibbles.push_back(uint8_t(b & 0xf));
-    nibbles.push_back(uint8_t(b >> 4));
+  // A dribble nibble: an odd number of nibbles in the frame.  Only a nibble
+  // wide interface can end part way through a byte.
+  if (!env.phy().is_gmii()) {
+    std::vector<uint8_t> syms = env.phy().to_symbols(f.to_wire(true, true));
+    syms.push_back(0x3);
+    env.phy().inject_symbols(syms);
+    WireFrame dribble = recv_one(env);
+    CHECK_MSG(dribble.dribble, "the dribble nibble was not reported");
+    CHECK(dribble.fcs_ok);
   }
-  nibbles.push_back(0x3);
-  env.phy().inject_nibbles(nibbles);
-  WireFrame dribble = recv_one(env);
-  CHECK_MSG(dribble.dribble, "the dribble nibble was not reported");
-  CHECK(dribble.fcs_ok);
 
   // RX_ER asserted in the middle of a frame.
   env.phy().set_next_rx_error(40);

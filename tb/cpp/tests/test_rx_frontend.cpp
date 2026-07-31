@@ -96,21 +96,19 @@ TEST(rxfe_reports_a_bad_fcs) {
   CHECK_EQ(data_of(w), f.to_wire(false, true));
 }
 
+#if PHY_DATA_W == 4
+// Only a nibble wide interface can end a frame part way through a byte.
 TEST(rxfe_reports_a_dribble_nibble) {
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(60, 24));
-  Bytes wire = f.to_wire(true, true);
-  std::vector<uint8_t> nibbles;
-  for (uint8_t b : wire) {
-    nibbles.push_back(uint8_t(b & 0xf));
-    nibbles.push_back(uint8_t(b >> 4));
-  }
-  nibbles.push_back(0x7);                 // the odd nibble
-  env.phy().inject_nibbles(nibbles);
+  std::vector<uint8_t> syms = env.phy().to_symbols(f.to_wire(true, true));
+  syms.push_back(0x7);                    // the odd nibble
+  env.phy().inject_symbols(syms);
 
   std::vector<RxWord> w = capture(env, 1);
   CHECK_EQ(end_of(w).err & ERR_DRIBBLE, ERR_DRIBBLE);
   CHECK_EQ(data_of(w), f.to_wire(false, true));   // the odd nibble is dropped
 }
+#endif
 
 TEST(rxfe_reports_rx_er) {
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 25));

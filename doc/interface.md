@@ -76,9 +76,40 @@ ports and is checked at elaboration; it is not a knob.
 unacknowledged SCB status bit (CX, FR, CNA, RNR).  Acknowledging through the
 SCB command word clears it.
 
-## MII
+## MII and GMII
 
-Standard 4-bit MII, PHY-sourced clocks:
+`PHY_DATA_W` selects the interface: 4 for MII, 8 for GMII.  It is an
+elaboration parameter, not a runtime one, so a build is one or the other; the
+regression runs both (`make test-all`).
+
+The framing is the same either way - seven bytes of 0x55, the 0xD5 delimiter,
+the frame, the FCS - and only the width of a symbol changes.  On MII a byte
+crosses as two nibbles, low nibble first; on GMII it crosses whole.
+
+With GMII the transmit clock is sourced by the MAC rather than the PHY.  The
+core still takes `mii_tx_clk` as an input: feed it from the fabric's 125 MHz
+and drive the PHY's GTX_CLK from the same place.  Half duplex, carrier
+extension and frame bursting are not implemented; gigabit is full duplex here.
+
+### Receive rate at gigabit
+
+The receive unit writes one byte per Wishbone transaction, which takes about
+eighty nanoseconds at 50 MHz.  That is comfortable at 100 Mb/s, where a byte
+arrives every eighty nanoseconds - a full length frame arrives with no
+overrun - but at gigabit a byte arrives every eight, and no FIFO depth fixes a
+sustained deficit.  So a GMII build receives nothing useful yet: the frames
+are reported as overruns.
+
+Transmit does not have the problem, because the command unit stages the whole
+frame before the transmitter starts, so the memory side has no real time
+constraint at all.
+
+Moving the memory side to whole words is the fix, and it is the next piece of
+work.  The receive tests are marked pending in a GMII build with that reason,
+so `make test PHY=gmii` says so on every run rather than the limitation
+sitting in a document nobody reads.
+
+Standard MII, PHY-sourced clocks:
 
 ```
 mii_tx_clk  in    mii_rx_clk  in

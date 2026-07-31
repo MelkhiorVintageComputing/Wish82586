@@ -17,7 +17,21 @@ YOSYS     ?= yosys
 
 TOP       := tb_top
 BUILD     := build
-OBJDIR    := $(BUILD)/obj_dir
+
+# PHY selects the interface the whole build is configured for:
+#   make test            MII, four bits, the default
+#   make test PHY=gmii   GMII, eight bits
+# The two are separate builds because the width is an elaboration parameter.
+PHY       ?= mii
+ifeq ($(PHY),gmii)
+PHY_W     := 8
+else ifeq ($(PHY),mii)
+PHY_W     := 4
+else
+$(error PHY must be mii or gmii)
+endif
+
+OBJDIR    := $(BUILD)/obj_dir_$(PHY)
 BIN       := $(OBJDIR)/wish82586_tb
 
 RTL_DIR   := src
@@ -48,11 +62,12 @@ FLAGS ?=
 
 VFLAGS := --cc --exe --build --trace -Wall \
           --top-module $(TOP) \
+          -GPHY_DATA_W=$(PHY_W) \
           -Mdir $(OBJDIR) \
           -o wish82586_tb \
-          -CFLAGS "-I$(CURDIR)/$(TB_CPP) -O2 -Wall -Wno-unused-parameter"
+          -CFLAGS "-I$(CURDIR)/$(TB_CPP) -DPHY_DATA_W=$(PHY_W) -O2 -Wall -Wno-unused-parameter"
 
-.PHONY: all test wave lint lint-icarus synth list clean
+.PHONY: all test test-all wave lint lint-icarus synth list clean
 
 all: $(BIN)
 
@@ -63,6 +78,11 @@ $(BIN): $(RTL) $(TB_SV) $(CPP_SRCS) $(CPP_HDRS) Makefile
 test: $(BIN)
 	$(BIN) $(FLAGS) $(T)
 
+# Both interfaces, which is what CI runs.
+test-all:
+	$(MAKE) test PHY=mii
+	$(MAKE) test PHY=gmii
+
 wave: $(BIN)
 	$(BIN) --trace $(FLAGS) $(T)
 	@echo "waveforms in $(BUILD)/waves/"
@@ -71,8 +91,10 @@ list: $(BIN)
 	@$(BIN) --list
 
 lint:
-	$(VERILATOR) --lint-only -Wall --top-module wish82586 $(RTL)
-	$(VERILATOR) --lint-only -Wall --top-module $(TOP) $(RTL) $(TB_SV)
+	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=4 --top-module wish82586 $(RTL)
+	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=8 --top-module wish82586 $(RTL)
+	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=4 --top-module $(TOP) $(RTL) $(TB_SV)
+	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=8 --top-module $(TOP) $(RTL) $(TB_SV)
 
 lint-icarus:
 	$(IVERILOG) -g2012 -t null -o /dev/null $(RTL) $(TB_SV)

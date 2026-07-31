@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 //
-// MII transmitter.  Runs in the PHY's transmit clock domain.
+// MII / GMII transmitter.  Runs in the PHY's transmit clock domain.
+//
+// DATA_W selects the interface: 4 for MII, where each byte goes out as two
+// nibbles low nibble first, or 8 for GMII, where a byte goes out whole.  With
+// GMII the clock is sourced by the MAC side rather than the PHY, but that is
+// a matter for whatever generates tx_clk, not for this block.
 //
 // The command unit stages a whole frame in the buffer RAM and raises go; this
 // block defers until the medium is quiet, sends preamble, delimiter, the
@@ -14,7 +19,9 @@
 // must be stable before go rises; they only change when a CONFIGURE command
 // runs, which cannot happen while a transmit is in flight.
 
-module mii_tx (
+module mii_tx #(
+    parameter int DATA_W = 4
+) (
     input  logic        tx_clk,
     input  logic        rst,
 
@@ -40,12 +47,21 @@ module mii_tx (
     input  logic [7:0]  ram_data_i,
 
     // ---- MII ----------------------------------------------------------------
-    output logic [3:0]  txd,
+    output logic [DATA_W-1:0] txd,
     output logic        tx_en,
     output logic        tx_er,
     input  logic        crs,
     input  logic        col
 );
+
+  initial begin
+    if (DATA_W != 4 && DATA_W != 8)
+      $fatal(1, "mii_tx: DATA_W must be 4 (MII) or 8 (GMII)");
+  end
+
+  // Symbols per byte, and how many bit times one symbol is worth.
+  localparam int HALF  = (DATA_W == 4) ? 1 : 0;
+  localparam int SHIFT = (DATA_W == 4) ? 2 : 3;
 
   typedef enum logic [3:0] {
     T_IDLE,
@@ -58,6 +74,12 @@ module mii_tx (
     T_BACKOFF,
     T_DONE
   } state_e;
+
+  localparam logic [DATA_W-1:0] PRE_SYM = {(DATA_W/4){4'h5}};
+  localparam logic [7:0] SFD_LAST = 8'h0d;
+  localparam logic [7:0] SFD_FULL = 8'hd5;
+  localparam logic [DATA_W-1:0] SFD_SYM = (DATA_W == 4) ? SFD_LAST[DATA_W-1:0]
+                                                        : SFD_FULL[DATA_W-1:0];
 
   state_e      state;
   logic        go_s1, go_s2;
@@ -78,9 +100,9 @@ module mii_tx (
   wire        padding  = (idx >= len_i);
   wire [7:0]  cur_byte = padding ? 8'h00 : ram_data_i;
 
-  // Bit times to nibble times.
-  wire [15:0] ifs_nibbles  = {8'h00, ifs_i} >> 2;
-  wire [7:0]  slot_nibbles = slot_time_i[9:2];
+  // Bit times to symbol times.
+  wire [15:0] ifs_nibbles  = {8'h00, ifs_i} >> SHIFT;
+  wire [7:0]  slot_nibbles = 8'(slot_time_i >> SHIFT);
 
   // Truncated binary exponential backoff, with an LFSR standing in for the
   // random number.  TODO: the standard masks at ten attempts and counts whole
@@ -94,7 +116,12 @@ module mii_tx (
   // The accumulator is fed combinationally with the nibble being handed to the
   // output register this cycle, so by the time the FCS itself is read the last
   // data nibble is already in it.
-  wire [3:0] data_nibble = phase ? cur_byte[7:4] : cur_byte[3:0];
+  // The symbol to send this cycle: half a byte with MII, the whole of it with
+  // GMII.  The FCS accumulator is fed the same thing.
+  wire [7:0] sym8 = (DATA_W == 4)
+                  ? (phase ? {4'h0, cur_byte[7:4]} : {4'h0, cur_byte[3:0]})
+                  : cur_byte;
+  wire [DATA_W-1:0] data_sym = sym8[DATA_W-1:0];
   wire       crc_init    = (state != T_DATA) && (state != T_FCS);
   wire       crc_en      = (state == T_DATA) && !col;
 
@@ -102,24 +129,28 @@ module mii_tx (
   logic [31:0] crc_unused;
   logic        crc_ok_unused;
 
-  crc32_eth #(.DATA_W(4)) u_crc (
+  crc32_eth #(.DATA_W(DATA_W)) u_crc (
       .clk      (tx_clk),
       .rst      (rst),
       .init     (crc_init),
       .en       (crc_en),
-      .data_i   (data_nibble),
+      .data_i   (data_sym),
       .crc_o    (crc_unused),
       .fcs_o    (fcs),
       .crc_ok_o (crc_ok_unused)
   );
 
-  wire [4:0] fcs_base = {fcs_cnt[1:0], 3'b000};
+  // Where in the FCS the next symbol comes from.
+  wire [4:0] fcs_base = (DATA_W == 4) ? {fcs_cnt[1:0], 3'b000} + (phase ? 5'd4 : 5'd0)
+                                      : {fcs_cnt[1:0], 3'b000};
 
   // Address the byte after the one being sent, so the registered RAM read has
   // landed by the time it is needed.
   always_comb begin
-    if (state == T_DATA && phase) ram_addr_o = idx[10:0] + 11'd1;
-    else                          ram_addr_o = idx[10:0];
+    // Address the byte after the one being sent, so the registered RAM read
+    // has landed by the time it is needed.  With GMII that is every cycle.
+    if (state == T_DATA && (HALF == 0 || phase)) ram_addr_o = idx[10:0] + 11'd1;
+    else                                        ram_addr_o = idx[10:0];
   end
 
   always_ff @(posedge tx_clk) begin
@@ -136,7 +167,7 @@ module mii_tx (
       attempt  <= 4'h0;
       deferred <= 1'b0;
       lfsr     <= 16'hace1;
-      txd      <= 4'h0;
+      txd      <= '0;
       tx_en    <= 1'b0;
       tx_er    <= 1'b0;
       done_o   <= 1'b0;
@@ -153,7 +184,7 @@ module mii_tx (
       case (state)
         T_IDLE: begin
           tx_en <= 1'b0;
-          txd   <= 4'h0;
+          txd   <= '0;
           if (go_s2 && !done_o) begin
             attempt  <= 4'h0;
             deferred <= 1'b0;
@@ -175,14 +206,14 @@ module mii_tx (
           end else begin
             idx     <= 16'h0;
             phase   <= 1'b0;
-            pre_cnt <= 5'd16;
+            pre_cnt <= (DATA_W == 4) ? 5'd16 : 5'd8;
             state   <= T_PREAMBLE;
           end
         end
 
         T_PREAMBLE: begin
           tx_en   <= 1'b1;
-          txd     <= (pre_cnt == 5'd1) ? 4'hd : 4'h5;
+          txd     <= (pre_cnt == 5'd1) ? SFD_SYM : PRE_SYM;
           pre_cnt <= pre_cnt - 5'd1;
           if (col) begin
             state <= T_JAM;
@@ -194,12 +225,12 @@ module mii_tx (
 
         T_DATA: begin
           tx_en <= 1'b1;
-          txd   <= data_nibble;
+          txd   <= data_sym;
           if (col) begin
             state <= T_JAM;
           end else begin
             phase <= ~phase;
-            if (phase) begin
+            if (HALF == 0 || phase) begin
               if (idx + 16'd1 >= send_len) begin
                 fcs_cnt <= 3'd0;
                 phase   <= 1'b0;
@@ -214,12 +245,12 @@ module mii_tx (
         // The FCS goes out least significant byte first, low nibble first.
         T_FCS: begin
           tx_en <= 1'b1;
-          txd   <= phase ? fcs[fcs_base + 5'd4 +: 4] : fcs[fcs_base +: 4];
+          txd   <= fcs[fcs_base +: DATA_W];
           if (col) begin
             state <= T_JAM;
           end else begin
             phase <= ~phase;
-            if (phase) begin
+            if (HALF == 0 || phase) begin
               if (fcs_cnt == 3'd3) begin
                 state <= T_END;
               end else begin
@@ -240,7 +271,7 @@ module mii_tx (
         // Keep transmitting for a moment so everyone sees the collision.
         T_JAM: begin
           tx_en   <= 1'b1;
-          txd     <= 4'h5;
+          txd     <= PRE_SYM;
           jam_cnt <= jam_cnt + 5'd1;
           if (jam_cnt == 5'd7) begin
             tx_en   <= 1'b0;
@@ -285,8 +316,8 @@ module mii_tx (
   end
 
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, crc_unused, crc_ok_unused, slot_time_i[10],
-                   slot_time_i[1:0], fcs_cnt[2]};
+  wire _unused = &{1'b0, crc_unused, crc_ok_unused, slot_time_i, fcs_cnt[2],
+                   sym8};
   // verilator lint_on UNUSED
 
 endmodule

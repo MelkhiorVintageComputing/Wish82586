@@ -38,7 +38,9 @@ pending test, implement the RTL, drop the marker.
 
 ```sh
 make                    # build the testbench
-make test               # build and run the whole regression (fast, ~1 s)
+make test               # build and run the whole regression (MII, fast, ~1 s)
+make test PHY=gmii      # the same tests against a GMII build
+make test-all           # both interfaces, which is what CI runs
 make test T=crc         # only tests whose name contains "crc"
 make test FLAGS=-v      # show test notes and why pending tests failed
 make wave T=<test>      # run with tracing -> build/waves/<test>.vcd
@@ -80,6 +82,12 @@ sequencer and SCB handler), `ie_cu` (command unit, including TRANSMIT),
 (24-bit 8/16-bit accesses onto the 32-bit Wishbone port), `wb_arb` (three-way
 port sharing), `crc32_eth` (Ethernet FCS, `DATA_W` 4 for MII or 8),
 `sync_fifo`, `async_fifo`, `dp_ram` (transmit staging).
+
+`mii_rx` and `mii_tx` take a `DATA_W` of 4 (MII) or 8 (GMII) and are otherwise
+one datapath; `PHY_DATA_W` on the top selects it at elaboration, so a build is
+one interface or the other.  `TEST_UNLESS_GMII` marks the tests that do not
+pass on a GMII build yet - the receive DMA moves a byte per bus transaction
+and cannot keep up with gigabit, which is the next thing to fix.
 
 `mii_rx` and `mii_tx` run in the PHY's clock domains.  Receive crosses to the
 system clock through `async_fifo`; transmit does not stream at all - the

@@ -11,7 +11,8 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 The chip works end to end: it comes up, runs command lists, receives frames
 into the host's descriptor rings and transmits from them, with deferral,
 padding, FCS, collision retry and internal loopback.  What is left is
-GMII, and the two approximations noted below.
+gigabit receive, which needs the memory side to move whole words, and the
+two approximations noted below.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
@@ -32,7 +33,8 @@ GMII, and the two approximations noted below.
 | AL-LOC = 0, both directions               | done, tested               |
 | TDR and DIAGNOSE commands                 | done, tested               |
 | DUMP command                              | reports failure            |
-| GMII                                      | later                      |
+| GMII datapath and transmit                | done, tested               |
+| GMII receive                              | needs word-wide DMA        |
 
 Everything the reference drivers do on a normal bring-up now works, and
 `sys_netbsd_style_bring_up` walks that sequence end to end.  Two things are
@@ -49,7 +51,9 @@ Needs Verilator (5.x), a C++ compiler and GNU make; Icarus Verilog and Yosys
 are optional extra checks.
 
 ```sh
-make test               # build and run the whole regression
+make test               # build and run the whole regression (MII)
+make test PHY=gmii      # the same tests against a GMII build
+make test-all           # both
 make test T=crc         # just the tests whose name contains "crc"
 make wave T=<test>      # run with tracing, waveform in build/waves/
 make lint               # Verilator lint

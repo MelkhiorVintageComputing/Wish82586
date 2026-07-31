@@ -202,7 +202,9 @@ TEST(sys_transmit_retries_after_collision) {
 // Receive
 // ---------------------------------------------------------------------------
 
-TEST(sys_receive_one_frame) {
+TEST_UNLESS_GMII(sys_receive_one_frame,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   bring_up(env);
 
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(200, 6));
@@ -219,7 +221,9 @@ TEST(sys_receive_one_frame) {
   CHECK_EQ(env.img().scb_status() & ie::SCB_ST_FR, ie::SCB_ST_FR);
 }
 
-TEST(sys_receive_filters_by_address) {
+TEST_UNLESS_GMII(sys_receive_filters_by_address,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   bring_up(env);
 
   EthFrame mine(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 7));
@@ -240,7 +244,9 @@ TEST(sys_receive_filters_by_address) {
   CHECK_EQ(rx[1].dst, bcast.dst);
 }
 
-TEST(sys_receive_discards_bad_fcs) {
+TEST_UNLESS_GMII(sys_receive_discards_bad_fcs,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   bring_up(env);
 
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 10));
@@ -252,7 +258,9 @@ TEST(sys_receive_discards_bad_fcs) {
   CHECK_EQ(env.img().scb_crc_errs(), uint16_t(1));
 }
 
-TEST(sys_receive_chains_buffers) {
+TEST_UNLESS_GMII(sys_receive_chains_buffers,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   // Small buffers force the receive unit to chain descriptors for one frame.
   env.img().build_init_structures();
   CHECK_DRV(env.drv().init());
@@ -270,7 +278,9 @@ TEST(sys_receive_chains_buffers) {
   CHECK_EQ(rx[0].data, f.payload);
 }
 
-TEST(sys_receive_back_to_back) {
+TEST_UNLESS_GMII(sys_receive_back_to_back,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   bring_up(env);
 
   std::vector<EthFrame> sent;
@@ -291,7 +301,9 @@ TEST(sys_receive_back_to_back) {
   }
 }
 
-TEST(sys_receive_out_of_resources) {
+TEST_UNLESS_GMII(sys_receive_out_of_resources,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   // One descriptor, two frames: the second one has nowhere to go and the
   // receive unit must report no resources rather than corrupt memory.
   CHECK_DRV(env.drv().init());
@@ -341,7 +353,9 @@ TEST(sys_internal_loopback) {
 // Configuration options that are wired up but not yet exercised elsewhere
 // ---------------------------------------------------------------------------
 
-TEST(sys_receive_promiscuous) {
+TEST_UNLESS_GMII(sys_receive_promiscuous,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   ie::Config cfg;
@@ -362,7 +376,9 @@ TEST(sys_receive_promiscuous) {
   CHECK_EQ(rx[0].data, f.payload);
 }
 
-TEST(sys_broadcast_can_be_disabled) {
+TEST_UNLESS_GMII(sys_broadcast_can_be_disabled,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   ie::Config cfg;
@@ -389,7 +405,9 @@ TEST(sys_broadcast_can_be_disabled) {
 // does not provide yet; they are the todo list.
 // ---------------------------------------------------------------------------
 
-TEST(sys_multicast_setup_and_filter) {
+TEST_UNLESS_GMII(sys_multicast_setup_and_filter,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   CHECK_DRV(env.drv().configure(ie::Config()));
@@ -413,7 +431,9 @@ TEST(sys_multicast_setup_and_filter) {
   CHECK_EQ(rx[0].dst, group);
 }
 
-TEST(sys_receive_saves_bad_frames) {
+TEST_UNLESS_GMII(sys_receive_saves_bad_frames,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   ie::Config cfg;
@@ -435,6 +455,9 @@ TEST(sys_receive_saves_bad_frames) {
   CHECK_EQ(rx[0].data, f.payload);
 }
 
+#if PHY_DATA_W == 4
+// An alignment error means the frame ended part way through a byte, which
+// only a nibble wide interface can do.
 TEST(sys_receive_reports_an_alignment_error) {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
@@ -446,14 +469,9 @@ TEST(sys_receive_reports_an_alignment_error) {
 
   // A frame that ends on a nibble boundary: correct bytes, one nibble over.
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 47));
-  Bytes wire = f.to_wire(true, true);
-  std::vector<uint8_t> nibbles;
-  for (uint8_t b : wire) {
-    nibbles.push_back(uint8_t(b & 0xf));
-    nibbles.push_back(uint8_t(b >> 4));
-  }
-  nibbles.push_back(0x9);
-  env.phy().inject_nibbles(nibbles);
+  std::vector<uint8_t> syms = env.phy().to_symbols(f.to_wire(true, true));
+  syms.push_back(0x9);
+  env.phy().inject_symbols(syms);
   CHECK_DRV(env.drv().wait_rx(1));
 
   std::vector<ie::RxFrame> rx = env.img().collect_rx();
@@ -461,8 +479,11 @@ TEST(sys_receive_reports_an_alignment_error) {
   CHECK_MSG(rx[0].status & ie::RFD_ST_ALIGN, "the alignment error was not reported");
   CHECK_EQ(env.img().scb_aln_errs(), uint16_t(1));
 }
+#endif
 
-TEST(sys_receive_good_frame_reports_no_errors) {
+TEST_UNLESS_GMII(sys_receive_good_frame_reports_no_errors,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   bring_up(env);
   EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(100, 48));
   env.phy().inject(f);
@@ -539,7 +560,9 @@ TEST(sys_dump_command_reports_failure) {
             "DUMP claimed to have worked");
 }
 
-TEST(sys_netbsd_style_bring_up) {
+TEST_UNLESS_GMII(sys_netbsd_style_bring_up,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   // The order i82586_init() uses: configure, set the address, run the TDR,
   // load the multicast list, then start the receiver.  Every step has to come
   // back OK or the driver logs a complaint.
@@ -574,7 +597,9 @@ TEST(sys_netbsd_style_bring_up) {
 }
 
 
-TEST(sys_multicast_several_groups) {
+TEST_UNLESS_GMII(sys_multicast_several_groups,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   CHECK_DRV(env.drv().configure(ie::Config()));
@@ -604,7 +629,9 @@ TEST(sys_multicast_several_groups) {
   CHECK_EQ(rx[1].dst, b.dst);
 }
 
-TEST(sys_multicast_empty_list_disables_multicast) {
+TEST_UNLESS_GMII(sys_multicast_empty_list_disables_multicast,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   CHECK_DRV(env.drv().configure(ie::Config()));
@@ -627,7 +654,9 @@ TEST(sys_multicast_empty_list_disables_multicast) {
   CHECK_EQ(rx[0].dst, mine.dst);
 }
 
-TEST(sys_multicast_overflow_takes_everything) {
+TEST_UNLESS_GMII(sys_multicast_overflow_takes_everything,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   // More addresses than the receive unit can hold: rather than filter on a
   // silently shortened list and drop frames the driver asked for, the chip
   // takes every multicast frame and lets software sort them out.
@@ -655,7 +684,9 @@ TEST(sys_multicast_overflow_takes_everything) {
 }
 
 
-TEST(sys_receive_with_header_in_the_descriptor) {
+TEST_UNLESS_GMII(sys_receive_with_header_in_the_descriptor,
+    "the receive DMA moves one byte per bus transaction, which cannot "
+    "keep up with a byte every eight nanoseconds") {
   // AL-LOC = 0 on the way in: the first fourteen bytes go into the descriptor
   // and the buffers hold only what follows.
   CHECK_DRV(env.drv().init());

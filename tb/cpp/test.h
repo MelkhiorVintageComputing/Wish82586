@@ -47,6 +47,17 @@ struct TestRegistrar {
       ::wtb::TestCase{#NAME, __FILE__, &NAME, false, nullptr});           \
   static void NAME(::wtb::Env& env)
 
+// A test that passes on MII but not yet on GMII.  The receive unit writes one
+// byte per bus transaction, which is about eighty nanoseconds; at gigabit a
+// byte arrives every eight.  No FIFO depth fixes a sustained rate deficit -
+// the memory side has to move whole words - so on a GMII build these run and
+// are expected to fail, exactly like any other pending test.
+#if PHY_DATA_W == 8
+#define TEST_UNLESS_GMII(NAME, REASON) TEST_PENDING(NAME, REASON)
+#else
+#define TEST_UNLESS_GMII(NAME, REASON) TEST(NAME)
+#endif
+
 #define TEST_PENDING(NAME, REASON)                                        \
   static void NAME(::wtb::Env&);                                          \
   static ::wtb::TestRegistrar NAME##_registrar(                           \
