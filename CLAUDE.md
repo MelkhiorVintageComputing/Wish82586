@@ -29,8 +29,9 @@ change anything in `wish82586_pkg.sv` or `i82586.h`, that test is what stops
 the testbench and the RTL from quietly agreeing with each other and with
 nothing else.
 
-Receive and transmit both work.  What is left is internal loopback, multicast
-filtering and the diagnostic commands.  Work proceeds test first: pick a
+Receive, transmit and internal loopback all work.  What is left is multicast
+filtering, saving bad frames, the AL-LOC = 0 transmit form and the diagnostic
+commands - each has a pending test describing it.  Work proceeds test first: pick a
 pending test, implement the RTL, drop the marker.
 
 ## Commands
@@ -84,7 +85,10 @@ port sharing), `crc32_eth` (Ethernet FCS, `DATA_W` 4 for MII or 8),
 system clock through `async_fifo`; transmit does not stream at all - the
 command unit stages a whole frame in `dp_ram` and hands it over with a four
 phase go/done handshake, which is what makes a collision retry cheap, since
-nothing has to be re-read from host memory.  Its
+nothing has to be re-read from host memory.  Internal loopback reuses that:
+the command unit feeds bytes to a system-domain FIFO as it reads them, and
+`ie_ru`'s input is muxed between that and the receive FIFO, so no frame ever
+crosses a clock boundary twice.  Its
 FIFO word is `{end, err[2:0], data[7:0]}`: data words carry frame bytes, and a
 single end word closes the frame and reports a bad FCS, a dribble nibble or an
 overrun.

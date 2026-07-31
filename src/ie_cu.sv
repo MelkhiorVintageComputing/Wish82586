@@ -55,6 +55,16 @@ module ie_cu (
     input  logic        tx_defer_i,
     input  logic        tx_no_crs_i,
 
+    // ---- internal loopback -------------------------------------------------
+    // With loopback configured the frame never reaches the wire: it is handed
+    // straight to the receive unit as it is read out of host memory, which
+    // keeps it in one clock domain and needs no second port on the staging
+    // RAM.  Word format matches the receive FIFO: {end, err[2:0], data[7:0]}.
+    input  logic        lb_enable_i,
+    output logic        lb_wr_o,
+    output logic [11:0] lb_data_o,
+    input  logic        lb_full_i,
+
     // ---- memory port -------------------------------------------------------
     output logic        bus_req_o,
     output logic        bus_we_o,
@@ -70,7 +80,7 @@ module ie_cu (
   localparam logic [15:0] CB_ST_DONE = 16'h8000;              // C
   localparam logic [15:0] CB_ST_OK   = 16'h2000;              // OK
 
-  typedef enum logic [3:0] {
+  typedef enum logic [4:0] {
     CU_IDLE,
     CU_FETCH_CMD,
     CU_FETCH_LINK,
@@ -84,6 +94,8 @@ module ie_cu (
     CU_TX_RD_BYTE,
     CU_TX_NEXT_TBD,
     CU_TX_GO,
+    CU_TX_LB_PAD,
+    CU_TX_LB_END,
     CU_FINISH,
     CU_NEXT
   } state_e;
@@ -162,7 +174,7 @@ module ie_cu (
         bus_addr_o = cbbase_i + {8'h00, tbd} + 24'd6;
       end
       CU_TX_RD_BYTE: begin
-        bus_req_o  = 1'b1;
+        bus_req_o  = !(lb_enable_i && lb_full_i);
         bus_byte_o = 1'b1;
         bus_addr_o = tbd_buf + {10'h0, tbd_off};
       end
@@ -211,10 +223,13 @@ module ie_cu (
       tx_ram_we_o     <= 1'b0;
       tx_ram_addr_o   <= 11'h0;
       tx_ram_data_o   <= 8'h0;
+      lb_wr_o         <= 1'b0;
+      lb_data_o       <= 12'h0;
     end else begin
       ev_cx_o     <= 1'b0;
       ev_cna_o    <= 1'b0;
       tx_ram_we_o <= 1'b0;
+      lb_wr_o     <= 1'b0;
       tx_done_s1  <= tx_done_i;
       tx_done_s2  <= tx_done_s1;
 
@@ -338,6 +353,10 @@ module ie_cu (
             tx_ram_addr_o <= tx_bytes[10:0];
             tx_ram_data_o <= bus_rdata_i[7:0];
             tx_bytes      <= tx_bytes + 16'd1;
+            if (lb_enable_i) begin
+              lb_wr_o   <= 1'b1;
+              lb_data_o <= {4'h0, bus_rdata_i[7:0]};
+            end
             if (tbd_off + 14'd1 >= tbd_count) begin
               state <= tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD;
             end else begin
@@ -354,7 +373,11 @@ module ie_cu (
 
         CU_TX_GO: begin
           tx_len_o <= tx_bytes;
-          tx_go_o  <= 1'b1;
+          if (lb_enable_i) begin
+            state <= CU_TX_LB_PAD;
+          end else begin
+            tx_go_o <= 1'b1;
+          end
           if (tx_go_o && tx_done_s2) begin
             tx_go_o   <= 1'b0;
             ok        <= tx_ok_i;
@@ -366,6 +389,26 @@ module ie_cu (
             state     <= CU_FINISH;
           end
         end
+
+        // Loopback pads the same way the wire would before closing the frame.
+        CU_TX_LB_PAD:
+          if (!lb_full_i) begin
+            if (tx_bytes + 16'd4 >= {8'h00, cfg_bytes_o[87:80]}) begin
+              state <= CU_TX_LB_END;
+            end else begin
+              lb_wr_o   <= 1'b1;
+              lb_data_o <= 12'h000;
+              tx_bytes  <= tx_bytes + 16'd1;
+            end
+          end
+
+        CU_TX_LB_END:
+          if (!lb_full_i) begin
+            lb_wr_o   <= 1'b1;
+            lb_data_o <= 12'h800;          // end of frame, no errors
+            ok        <= 1'b1;
+            state     <= CU_FINISH;
+          end
 
         CU_FINISH:
           if (bus_ack_i) begin

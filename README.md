@@ -10,8 +10,9 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 
 The chip works end to end: it comes up, runs command lists, receives frames
 into the host's descriptor rings and transmits from them, with deferral,
-padding, FCS and collision retry.  What is left is the trimmings - internal
-loopback, multicast filtering, TDR and dump - and GMII.
+padding, FCS, collision retry and internal loopback.  What is left is
+multicast filtering, saving bad frames, the AL-LOC = 0 transmit form, the
+diagnostic commands, and GMII.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
@@ -26,8 +27,10 @@ loopback, multicast filtering, TDR and dump - and GMII.
 | memory arbiter (`wb_arb`)                 | done, tested               |
 | Ethernet FCS (`crc32_eth`)                | done, tested               |
 | synchronous FIFO (`sync_fifo`)            | done, tested               |
-| internal loopback                         | to do                      |
+| internal loopback                         | done, tested               |
 | multicast address filtering               | to do                      |
+| saving bad frames (SAV-BF)                | to do                      |
+| transmit with AL-LOC = 0                  | to do                      |
 | TDR, DUMP, DIAGNOSE commands              | to do                      |
 | GMII                                      | later                      |
 

@@ -153,6 +153,13 @@ module wish82586 #(
   wire [3:0]  cfg_retry    = cfg_bytes[63:60];
   wire        cfg_no_crc   = cfg_bytes[68];
   wire [7:0]  cfg_min_len  = cfg_bytes[87:80];
+  wire        cfg_int_lb   = cfg_bytes[30];   // CONFIGURE byte 3, bit 6
+
+  // Internal loopback: the transmit side hands frames straight to the receive
+  // unit through this FIFO instead of putting them on the wire.
+  logic        lb_wr, lb_full, lb_rd, lb_empty;
+  logic [11:0] lb_wdata, lb_rdata;
+  logic [6:0]  lb_level;   // observation only
 
   ie_core u_core (
       .clk          (clk),
@@ -218,6 +225,10 @@ module wish82586 #(
       .tx_xcoll_i    (tx_xcoll),
       .tx_defer_i    (tx_defer),
       .tx_no_crs_i   (tx_no_crs),
+      .lb_enable_i   (cfg_int_lb),
+      .lb_wr_o       (lb_wr),
+      .lb_data_o     (lb_wdata),
+      .lb_full_i     (lb_full),
       .bus_req_o    (cu_req),
       .bus_we_o     (cu_we),
       .bus_byte_o   (cu_byte),
@@ -256,6 +267,27 @@ module wish82586 #(
       .rempty  (rxf_empty)
   );
 
+  sync_fifo #(.WIDTH(12), .DEPTH(64)) u_lb_fifo (
+      .clk     (clk),
+      .rst     (rst),
+      .flush   (1'b0),
+      .wr_en   (lb_wr),
+      .wr_data (lb_wdata),
+      .full    (lb_full),
+      .rd_en   (lb_rd),
+      .rd_data (lb_rdata),
+      .empty   (lb_empty),
+      .level   (lb_level)
+  );
+
+  // The receive unit takes frames from the wire, or from the loopback path
+  // when the chip is configured that way.
+  wire        ru_src_empty = cfg_int_lb ? lb_empty : rxf_empty;
+  wire [11:0] ru_src_data  = cfg_int_lb ? lb_rdata : rxf_rdata;
+  logic       ru_src_rd;
+  assign lb_rd   = ru_src_rd &&  cfg_int_lb;
+  assign rxf_rd  = ru_src_rd && !cfg_int_lb;
+
   ie_ru u_ru (
       .clk             (clk),
       .rst             (rst),
@@ -275,9 +307,9 @@ module wish82586 #(
       .no_bcast_i      (cfg_bytes[65]),
       .save_bad_i      (cfg_bytes[23]),
       .min_frame_len_i (cfg_bytes[87:80]),
-      .rx_empty_i      (rxf_empty),
-      .rx_data_i       (rxf_rdata),
-      .rx_rd_o         (rxf_rd),
+      .rx_empty_i      (ru_src_empty),
+      .rx_data_i       (ru_src_data),
+      .rx_rd_o         (ru_src_rd),
       .bus_req_o       (ru_req),
       .bus_we_o        (ru_we),
       .bus_byte_o      (ru_byte),
@@ -392,7 +424,7 @@ module wish82586 #(
   // ia_addr and cfg_bytes are already captured from the IA-SETUP and CONFIGURE
   // commands and are waiting for the transmit and receive paths to use them.
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, mdio_i, cfg_bytes, rx_active, rx_bytes};
+  wire _unused = &{1'b0, mdio_i, cfg_bytes, rx_active, rx_bytes, lb_level};
   // verilator lint_on UNUSED
 
 endmodule

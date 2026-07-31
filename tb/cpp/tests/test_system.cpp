@@ -316,9 +316,7 @@ TEST(sys_receive_out_of_resources) {
 // before putting the interface on the wire.
 // ---------------------------------------------------------------------------
 
-TEST_PENDING(sys_internal_loopback,
-             "internal loopback needs a path from the transmit side back into "
-             "the receive unit; the two live in different clock domains") {
+TEST(sys_internal_loopback) {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   ie::Config cfg;
@@ -336,6 +334,143 @@ TEST_PENDING(sys_internal_loopback,
   CHECK_EQ(rx[0].data, f.payload);
   CHECK_MSG(env.phy().tx_count() == 0,
             "an internally looped back frame reached the MII pins");
+}
+
+
+// ---------------------------------------------------------------------------
+// Configuration options that are wired up but not yet exercised elsewhere
+// ---------------------------------------------------------------------------
+
+TEST(sys_receive_promiscuous) {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.promiscuous = true;
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  // Addressed to somebody else entirely, and kept anyway.
+  EthFrame f(MacAddr(0x02, 0x11, 0x22, 0x33, 0x44, 0x55), env.peer_mac(), 0x0800,
+             random_payload(64, 40));
+  env.phy().inject(f);
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_EQ(rx[0].dst, f.dst);
+  CHECK_EQ(rx[0].data, f.payload);
+}
+
+TEST(sys_broadcast_can_be_disabled) {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.no_broadcast = true;
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  EthFrame bcast(MacAddr::broadcast(), env.peer_mac(), 0x0800,
+                 random_payload(64, 41));
+  EthFrame mine(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 42));
+  env.phy().inject(bcast);
+  env.phy().inject(mine);
+  CHECK_DRV(env.drv().wait_rx(1));
+  env.tick(3000);
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_MSG(rx.size() == 1, "the broadcast frame was not turned away");
+  CHECK_EQ(rx[0].dst, mine.dst);
+}
+
+// ---------------------------------------------------------------------------
+// Still to do.  These describe behaviour the drivers can ask for and the chip
+// does not provide yet; they are the todo list.
+// ---------------------------------------------------------------------------
+
+TEST_PENDING(sys_multicast_setup_and_filter,
+             "MC-SETUP is accepted but its address list is not stored, so "
+             "multicast other than broadcast is not matched") {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  CHECK_DRV(env.drv().configure(ie::Config()));
+
+  const MacAddr group(0x01, 0x00, 0x5e, 0x00, 0x00, 0x01);
+  const MacAddr other_group(0x01, 0x00, 0x5e, 0x7f, 0x7f, 0x7f);
+  CHECK_DRV(env.drv().mc_setup({group}));
+
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  EthFrame wanted(group, env.peer_mac(), 0x0800, random_payload(64, 43));
+  EthFrame unwanted(other_group, env.peer_mac(), 0x0800, random_payload(64, 44));
+  env.phy().inject(unwanted);
+  env.phy().inject(wanted);
+  CHECK_DRV(env.drv().wait_rx(1));
+  env.tick(3000);
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_MSG(rx.size() == 1, "the multicast filter kept the wrong frames");
+  CHECK_EQ(rx[0].dst, group);
+}
+
+TEST_PENDING(sys_receive_saves_bad_frames,
+             "SAV-BF keeps the frame but the descriptor status does not yet "
+             "carry the error bits") {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.save_bad_frames = true;
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 45));
+  env.phy().inject_bad_fcs(f);
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_MSG(rx[0].status & ie::RFD_ST_CRC, "the CRC error was not reported");
+  CHECK_MSG(!(rx[0].status & ie::RFD_ST_OK), "a bad frame was marked good");
+}
+
+TEST_PENDING(sys_transmit_with_header_in_the_command_block,
+             "AL-LOC = 0, where the destination and type come from the command "
+             "block and the source address from IA-SETUP, is not implemented") {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.addr_in_buffer = false;
+  CHECK_DRV(env.drv().configure(cfg));
+
+  EthFrame f(env.peer_mac(), env.local_mac(), 0x0800, random_payload(80, 46));
+  const uint16_t cb = env.img().add_transmit(f, false);
+  CHECK_DRV(env.drv().run_cb(cb));
+  CHECK_MSG(env.sim().run_until([&]() { return env.phy().tx_count() >= 1; }, 1 * MS),
+            "nothing came out on the MII transmit pins");
+
+  WireFrame w = env.phy().pop_tx();
+  CHECK(w.fcs_ok);
+  CHECK_EQ(w.data, f.to_wire(true, true));
+}
+
+TEST_PENDING(sys_tdr_command,
+             "the time domain reflectometer command is not implemented") {
+  CHECK_DRV(env.drv().init());
+  const uint16_t cb = env.img().alloc(8);
+  env.mem().wr16(env.img().addr_of(cb) + 0, 0);
+  env.mem().wr16(env.img().addr_of(cb) + 2, ie::CB_CMD_EL | ie::CMD_TDR);
+  env.mem().wr16(env.img().addr_of(cb) + 4, ie::NULL_PTR);
+  env.mem().wr16(env.img().addr_of(cb) + 6, 0);
+
+  CHECK_DRV(env.drv().run_cb(cb));
+  CHECK_MSG(env.img().cb_status(cb) & ie::CB_ST_OK, "TDR reported failure");
+  // A quiet, correctly terminated link: no open, no short, no transceiver
+  // problem.
+  const uint16_t tdr = env.mem().rd16(env.img().addr_of(cb) + 6);
+  CHECK_EQ(tdr & 0x7000, 0);
 }
 
 }  // namespace wtb
