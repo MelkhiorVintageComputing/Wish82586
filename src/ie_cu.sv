@@ -11,9 +11,15 @@
 // the opcode in bits [2:0].  Its status word gets C at bit 15, B at bit 14 and
 // OK at bit 13, which is what the drivers poll.
 //
-// Implemented: NOP, IA-SETUP, CONFIGURE and TRANSMIT.  MC-SETUP is accepted
-// but its address list is not stored yet; TDR, DUMP and DIAGNOSE complete
-// without OK.
+// Implemented: NOP, IA-SETUP, CONFIGURE, MC-SETUP, TRANSMIT, TDR and
+// DIAGNOSE.  DUMP completes without OK - it would have to invent the contents
+// of registers this design does not have.
+//
+// TDR is not optional in practice: NetBSD's i82586_init() runs it on every
+// bring-up and complains in the log if it fails.  There is no coaxial cable
+// on the other side of an MII PHY to reflect anything, so what it reports is
+// "no fault found", which is the accurate answer for this hardware.  Cable
+// and link state belong to the PHY and are read over MDIO.
 //
 // TRANSMIT copies the buffer chain into the staging RAM a byte at a time and
 // then hands it to mii_tx, which owns deferral, padding, the FCS and the retry
@@ -114,6 +120,7 @@ module ie_cu (
     CU_TX_HDR_DST,
     CU_TX_HDR_SRC,
     CU_TX_HDR_LEN,
+    CU_TDR_WR,
     CU_FINISH,
     CU_NEXT
   } state_e;
@@ -229,6 +236,12 @@ module ie_cu (
         bus_req_o  = 1'b1;
         bus_addr_o = cb_addr + 24'd6;
       end
+      CU_TDR_WR: begin
+        bus_req_o   = 1'b1;
+        bus_we_o    = 1'b1;
+        bus_addr_o  = cb_addr + 24'd6;
+        bus_wdata_o = 16'h8000;      // link OK: no open, no short, no problem
+      end
       CU_MC_RD_ADDR: begin
         bus_req_o  = 1'b1;
         bus_addr_o = cb_addr + {8'h00, mc_off} + {19'h0, idx, 1'b0};
@@ -341,7 +354,10 @@ module ie_cu (
                 // frame is in the buffer, clear means the header is here.
                 state <= cfg_bytes_o[27] ? CU_TX_RD_TBD : CU_TX_HDR_DST;
               end
-              // TODO: TDR, DUMP and DIAGNOSE.
+              wish82586_pkg::CMD_TDR:      state <= CU_TDR_WR;
+              // The internal logic is what it is; there is nothing to fail.
+              wish82586_pkg::CMD_DIAGNOSE: state <= CU_FINISH;
+              // DUMP would have to invent 170 bytes of register contents.
               default: begin
                 ok    <= 1'b0;
                 state <= CU_FINISH;
@@ -555,6 +571,9 @@ module ie_cu (
             ok        <= 1'b1;
             state     <= CU_FINISH;
           end
+
+        CU_TDR_WR:
+          if (bus_ack_i) state <= CU_FINISH;
 
         CU_FINISH:
           if (bus_ack_i) begin

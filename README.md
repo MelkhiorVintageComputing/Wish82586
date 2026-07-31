@@ -11,7 +11,7 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 The chip works end to end: it comes up, runs command lists, receives frames
 into the host's descriptor rings and transmits from them, with deferral,
 padding, FCS, collision retry and internal loopback.  What is left is
-the diagnostic commands and GMII.
+GMII, and the two approximations noted below.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
@@ -30,12 +30,18 @@ the diagnostic commands and GMII.
 | multicast address filtering               | exact, 8 entries           |
 | saving bad frames (SAV-BF)                | done, tested               |
 | AL-LOC = 0, both directions               | done, tested               |
-| TDR, DUMP, DIAGNOSE commands              | to do                      |
+| TDR and DIAGNOSE commands                 | done, tested               |
+| DUMP command                              | reports failure            |
 | GMII                                      | later                      |
 
-The system-level tests for everything in the "to do" list are already written
-and run on every build, marked pending.  They are the specification: as each
-block lands, its tests turn from `PENDING` to `XPASS` and the marker comes off.
+Everything the reference drivers do on a normal bring-up now works, and
+`sys_netbsd_style_bring_up` walks that sequence end to end.  Two things are
+deliberate approximations, both marked TODO in the RTL: the collision backoff
+uses an LFSR rather than true truncated binary exponential backoff, and the
+command unit stages transmit frames a byte per bus cycle on a 32-bit bus.
+
+Tests for work not yet done are written up front and marked pending, so the
+pending count is the todo list; it is currently empty.
 
 ## Building and testing
 

@@ -494,8 +494,7 @@ TEST(sys_transmit_with_header_in_the_command_block) {
   CHECK_EQ(w.data, f.to_wire(true, true));
 }
 
-TEST_PENDING(sys_tdr_command,
-             "the time domain reflectometer command is not implemented") {
+TEST(sys_tdr_command) {
   CHECK_DRV(env.drv().init());
   const uint16_t cb = env.img().alloc(8);
   env.mem().wr16(env.img().addr_of(cb) + 0, 0);
@@ -506,9 +505,72 @@ TEST_PENDING(sys_tdr_command,
   CHECK_DRV(env.drv().run_cb(cb));
   CHECK_MSG(env.img().cb_status(cb) & ie::CB_ST_OK, "TDR reported failure");
   // A quiet, correctly terminated link: no open, no short, no transceiver
-  // problem.
+  // problem.  NetBSD's ie_run_tdr() returns without complaining only if the
+  // success bit is set, so it has to be there and not merely implied.
   const uint16_t tdr = env.mem().rd16(env.img().addr_of(cb) + 6);
+  CHECK_MSG(tdr & 0x8000, "the TDR success bit was not set");
   CHECK_EQ(tdr & 0x7000, 0);
+}
+
+TEST(sys_diagnose_command) {
+  CHECK_DRV(env.drv().init());
+  const uint16_t cb = env.img().alloc(6);
+  env.mem().wr16(env.img().addr_of(cb) + 0, 0);
+  env.mem().wr16(env.img().addr_of(cb) + 2, ie::CB_CMD_EL | ie::CMD_DIAGNOSE);
+  env.mem().wr16(env.img().addr_of(cb) + 4, ie::NULL_PTR);
+
+  CHECK_DRV(env.drv().run_cb(cb));
+  CHECK_MSG(env.img().cb_status(cb) & ie::CB_ST_OK, "self test reported failure");
+}
+
+TEST(sys_dump_command_reports_failure) {
+  // DUMP would have to invent the contents of registers this design does not
+  // have, so it says it did not work rather than handing back made up state.
+  CHECK_DRV(env.drv().init());
+  const uint16_t cb = env.img().alloc(8);
+  env.mem().wr16(env.img().addr_of(cb) + 0, 0);
+  env.mem().wr16(env.img().addr_of(cb) + 2, ie::CB_CMD_EL | ie::CMD_DUMP);
+  env.mem().wr16(env.img().addr_of(cb) + 4, ie::NULL_PTR);
+  env.mem().wr16(env.img().addr_of(cb) + 6, 0);
+
+  CHECK_DRV(env.drv().run_cb(cb));
+  CHECK_MSG(env.img().cb_status(cb) & ie::CB_ST_C, "DUMP never completed");
+  CHECK_MSG(!(env.img().cb_status(cb) & ie::CB_ST_OK),
+            "DUMP claimed to have worked");
+}
+
+TEST(sys_netbsd_style_bring_up) {
+  // The order i82586_init() uses: configure, set the address, run the TDR,
+  // load the multicast list, then start the receiver.  Every step has to come
+  // back OK or the driver logs a complaint.
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().configure(ie::Config()));
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+
+  const uint16_t tdr = env.img().alloc(8);
+  env.mem().wr16(env.img().addr_of(tdr) + 0, 0);
+  env.mem().wr16(env.img().addr_of(tdr) + 2, ie::CB_CMD_EL | ie::CMD_TDR);
+  env.mem().wr16(env.img().addr_of(tdr) + 4, ie::NULL_PTR);
+  env.mem().wr16(env.img().addr_of(tdr) + 6, 0);
+  CHECK_DRV(env.drv().run_cb(tdr));
+  CHECK_MSG(env.mem().rd16(env.img().addr_of(tdr) + 6) & 0x8000,
+            "a driver would log a TDR complaint here");
+
+  CHECK_DRV(env.drv().mc_setup({MacAddr(0x01, 0x00, 0x5e, 0, 0, 1)}));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  // And it works afterwards, both ways.
+  EthFrame in(env.local_mac(), env.peer_mac(), 0x0800, random_payload(100, 70));
+  env.phy().inject(in);
+  CHECK_DRV(env.drv().wait_rx(1));
+  CHECK_EQ(env.img().collect_rx().at(0).data, in.payload);
+
+  EthFrame out(env.peer_mac(), env.local_mac(), 0x0800, random_payload(100, 71));
+  CHECK_DRV(env.drv().transmit(out));
+  CHECK_MSG(env.sim().run_until([&]() { return env.phy().tx_count() >= 1; }, 1 * MS),
+            "nothing was transmitted after the bring-up sequence");
+  CHECK_EQ(env.phy().pop_tx().data, out.to_wire(true, true));
 }
 
 
