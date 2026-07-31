@@ -16,6 +16,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -52,6 +53,28 @@ class Installer:
 
     def line(self, text, delay=0.3):
         self.send(text + "\r", delay)
+
+    def choose(self, label, timeout=180):
+        """Picks the menu entry whose text contains label.
+
+        sysinst's menus keep the same wording but not the same letters - "use
+        the entire disk" is a on one screen and b on the next - so the letter
+        is read off the screen rather than assumed.  That is also what makes
+        this survive a NetBSD release adding an option somewhere.
+        """
+        pat = re.compile(br"([a-z]):\s*" + label.encode())
+        try:
+            self.child.expect(pat, timeout=timeout)
+        except pexpect.TIMEOUT:
+            tail = self.child.before[-2000:] if self.child.before else b""
+            raise SystemExit("no menu entry matching %r\nlast output:\n%s"
+                             % (label, tail.decode("utf-8", "replace")))
+        except pexpect.EOF:
+            raise SystemExit("QEMU exited looking for a menu entry %r" % label)
+        letter = self.child.match.group(1).decode()
+        print("   %s -> %s" % (label, letter))
+        self.line(letter)
+        return letter
 
 
 def build(args):
@@ -114,115 +137,75 @@ def build(args):
 
 
 def run_sysinst(inst, args):
-    # The bootloader counts down on its own; the installer comes up asking for
-    # a terminal type first.
-    print("== waiting for the installer")
-    inst.wait([br"Terminal type", br"a: Installation messages"], timeout=600,
-              what="the first sysinst prompt")
+    """Answers whatever screen sysinst puts up, until the install is done.
 
-    # Terminal type: the default (vt100) is right for a serial console.
-    inst.line("")
+    Driving sysinst blind, a fixed sequence of answers is always one surprise
+    behind: screens are optional, their order shifts, and the letters move.
+    So this is a table instead - each entry is something that might appear and
+    what to do about it - and the loop just keeps answering until the install
+    says it has finished.  Adding support for a new release usually means one
+    more row.
+    """
+    done = ["no"]
 
-    print("== choosing the language and starting the install")
-    inst.wait(br"a: Installation messages in English", what="the language menu")
-    inst.line("a")
+    def pick(label):
+        return lambda: inst.choose(label)
 
-    inst.wait(br"a: Install NetBSD to hard disk", what="the main menu")
-    inst.line("a")
+    def enter():
+        inst.line("")
 
-    inst.wait(br"Shall we continue", what="the confirmation")
-    inst.line("b")          # b: Yes
+    def finish():
+        done[0] = "yes"
 
-    print("== partitioning")
-    # Only one disk is attached, so it is the first entry.
-    inst.wait([br"Available disks", br"a: wd0"], what="the disk list")
-    inst.line("a")
+    # Ordered: the first pattern that matches wins, so put the specific ones
+    # above the general ones.
+    table = [
+        (br"Terminal type",                      enter),
+        (br"Installation messages in English",   pick("Installation messages in English")),
+        (br"Install NetBSD to hard disk",        pick("Install NetBSD to hard disk")),
+        (br"partitioning scheme",                pick("Master Boot Record")),
+        (br"This is the correct geometry",       pick("This is the correct geometry")),
+        (br"Use the entire disk",                pick("Use the entire disk")),
+        (br"install the NetBSD bootcode",        pick("Yes")),
+        (br"Use existing partition sizes",       pick("Use existing partition sizes")),
+        (br"Partition sizes ok",                 pick("Partition sizes ok")),
+        (br"name for your NetBSD disk",          enter),
+        (br"Minimal installation",
+            pick("Minimal installation") if args.minimal else pick("Full installation")),
+        (br"CD-ROM",                             pick("CD-ROM")),
+        (br"([a-z]):\s*Continue",                pick("Continue")),
+        (br"Finished configuring",               pick("Finished configuring")),
+        (br"Configure network",                  pick("Finished configuring")),
+        (br"Exit Install System",                finish),
+        (br"Hit enter to continue",              enter),
+        # sysinst asks this both to start and after each destructive step.
+        (br"([a-z]):\s*Yes",                     pick("Yes")),
+        (br"[Ss]hall we continue",               pick("Yes")),
+        (br"#\s",                                finish),
+    ]
 
-    # An unpartitioned disk brings up the scheme menu first.  MBR, not GPT:
-    # this is a PC BIOS boot with NetBSD's traditional bootcode, which is the
-    # combination least likely to surprise anyone.
-    idx = inst.wait([br"partitioning scheme",
-                     br"a: This is the correct geometry",
-                     br"a: Use the entire disk"], timeout=180,
-                    what="the partitioning scheme, geometry or whole disk question")
-    if idx == 0:
-        inst.line("b")          # b: Master Boot Record
-        idx = inst.wait([br"a: This is the correct geometry",
-                         br"a: Use the entire disk"], timeout=180,
-                        what="the geometry or whole disk question") + 1
-    if idx == 1:
-        inst.line("a")          # the geometry is whatever QEMU says it is
-        inst.wait(br"a: Use the entire disk", what="the whole disk question")
-    inst.line("a")
-
-    # Bootblocks and the partition table.
-    idx = inst.wait([br"install the NetBSD bootcode", br"a: Set sizes",
-                     br"Partition table"], timeout=180, what="the bootcode question")
-    if idx == 0:
-        inst.line("b")      # b: Yes, install the bootcode
-
-    print("== accepting the default partition sizes")
-    inst.wait([br"a: Set sizes of NetBSD partitions",
-               br"b: Use existing partition sizes"], what="the sizes menu")
-    inst.line("b")          # keep it simple: the defaults are fine
-
-    inst.wait([br"Partition sizes ok", br"x: Partition sizes ok"], timeout=120,
-              what="the partition summary")
-    inst.line("x")
-
-    idx = inst.wait([br"Shall we continue", br"name for your NetBSD disk"],
-                    timeout=120, what="the disk name or confirmation")
-    if idx == 1:
-        inst.line("")       # accept the default disk name
-        inst.wait(br"Shall we continue", what="the confirmation")
-    inst.line("b")          # b: Yes
-
-    print("== selecting the sets (this takes a while)")
-    idx = inst.wait([br"a: Full installation", br"Selected sets"], timeout=600,
-                    what="the distribution set menu")
-    if args.minimal:
-        # d: Minimal installation - base and kernel only, which is all that is
-        # needed to load a driver and run ifconfig.
-        inst.line("d")
-    else:
-        inst.line("a")
-
-    print("== installing from the CD")
-    inst.wait([br"a: CD-ROM / DVD", br"Install from"], timeout=300,
-              what="the install medium menu")
-    inst.line("a")
-    idx = inst.wait([br"Continue", br"x: Continue"], timeout=180, what="the medium confirmation")
-    inst.line("x")
-
-    # The extract takes minutes.
-    print("== extracting")
-    inst.wait([br"Hit enter to continue", br"configure additional items",
-               br"Installation of NetBSD.*complete"], timeout=3600,
-              what="the end of the extract")
-    inst.line("")
-
-    print("== finishing up")
-    # A few post-install questions, all of which have a sensible default.
-    for _ in range(12):
-        idx = inst.wait([br"Hit enter to continue",
-                         br"a: Configure network",
-                         br"x: Finished configuring",
-                         br"e: Exit Install System",
-                         br"# "], timeout=600, what="a post-install prompt")
-        if idx == 0:
-            inst.line("")
-        elif idx == 1:
-            inst.line("x")          # skip network configuration
-        elif idx == 2:
-            inst.line("x")
-        elif idx == 3:
-            inst.line("e")
-        else:
+    patterns = [p for p, _ in table]
+    seen = {}
+    for step in range(200):
+        idx = inst.wait(patterns, timeout=3600, what="any sysinst screen")
+        label = patterns[idx][:40].decode("ascii", "replace")
+        # A screen that comes back many times means an answer is not being
+        # accepted; stopping beats spinning until the timeout.
+        seen[idx] = seen.get(idx, 0) + 1
+        if seen[idx] > 12:
+            raise SystemExit("stuck answering %r; see the console log" % label)
+        print("   [%d] %s" % (step, label))
+        table[idx][1]()
+        if done[0] == "yes":
             break
+    else:
+        raise SystemExit("the installer never finished; see the console log")
 
-    print("== shutting the guest down")
+    print("== halting the guest")
+    inst.wait([br"#\s", br"Exit Install System"], timeout=600, what="a shell prompt")
+    inst.line("")
     inst.line("halt -p")
-    time.sleep(5)
+    time.sleep(10)
     inst.child.close(force=True)
 
 

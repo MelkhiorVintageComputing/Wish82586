@@ -30,6 +30,25 @@ The card being emulated is the AT&T StarLAN 10, which NetBSD drives with
   reset and channel attention, which is close to what `wish82586` already
   presents: memory on the Wishbone master, RESET and CA in the CSR.
 
+## The card's host interface
+
+From `doc/drivers/NetBSD/if_aireg.h`, which is why this card was picked: it is
+almost exactly what `wish82586` already presents.
+
+| offset      | what                                                      |
+|-------------|-----------------------------------------------------------|
+| I/O + 0     | any write resets the 82586                                 |
+| I/O + 1     | any write is a channel attention                           |
+| I/O + 6     | board type in the low nibble, revision in the high         |
+| I/O + 7     | attributes: bus width, speed, encoding, medium, boot ROM   |
+| memory      | the shared RAM window the 82586 and the host both work in  |
+
+Sixteen bytes of I/O space, of which four matter, and a memory window.  Reset
+and channel attention are `CTRL.RST` and `CTRL.CA` in the CSR; the memory
+window is what the Wishbone master already reads and writes.  The two board
+identification bytes are the only things with no equivalent, and they are
+constants.
+
 ## Versions
 
 QEMU **7.2**, which is what Debian 12 ships (7.2.22) and what is already

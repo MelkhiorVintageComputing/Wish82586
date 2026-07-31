@@ -16,6 +16,10 @@ headers.
 | `if_ie_obio_sun3.c`   | `sys/arch/sun3/dev/if_ie_obio.c`     |
 | `if_ie_vme_sun3.c`    | `sys/arch/sun3/dev/if_ie_vme.c`      |
 | `if_ievar.h`          | `sys/arch/sun3/dev/if_ievar.h`       |
+| `if_aireg.h`          | `sys/dev/isa/if_aireg.h`             |
+
+`if_aireg.h` is the StarLAN 10 card's host interface - the I/O register map
+that `cosim/` has to emulate.  See `doc/cosimulation.md`.
 
 ## Why this is the layout reference
 
