@@ -49,8 +49,11 @@ buffer addresses, control blocks addressed as 16-bit offsets from CBBASE.  How
 that maps onto 32-bit bus cycles is up to the core; the testbench only checks
 the resulting memory contents and that no access lands outside the model.
 
-`WB_DATA_W` is a parameter.  Only 32 is wired up today, 16 is planned; the
-testbench memory model is already width-parameterised on the C++ side.
+The master port is 32 bits wide and stays that way.  A host that needs a
+narrower bus is served by a width adapter in the Wishbone fabric, which is
+where that conversion belongs - the MAC has no business knowing how wide the
+machine it is plugged into happens to be.  `WB_DATA_W` exists to size the
+ports and is checked at elaboration; it is not a knob.
 
 ## Interrupt
 

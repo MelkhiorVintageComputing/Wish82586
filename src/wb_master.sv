@@ -42,7 +42,8 @@ module wb_master #(
 );
 
   initial begin
-    if (WB_DATA_W != 32) $fatal(1, "wb_master: only WB_DATA_W = 32 is wired up");
+    if (WB_DATA_W != 32)
+      $fatal(1, "wb_master: the master port is 32 bits wide; put a width adapter in the fabric");
   end
 
   // Byte lanes and data placement for the access being presented.

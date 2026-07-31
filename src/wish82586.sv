@@ -11,7 +11,7 @@
 // contract the testbench in tb/ already drives - see doc/interface.md.
 
 module wish82586 #(
-    parameter int WB_DATA_W = 32,   // 32 today; 16 planned
+    parameter int WB_DATA_W = 32,   // fixed at 32, see doc/interface.md
     parameter int WB_ADDR_W = 32
 ) (
     input  logic                   clk,
