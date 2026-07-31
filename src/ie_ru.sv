@@ -118,6 +118,7 @@ module ie_ru (
   logic        suspended;
   logic        suspend_pending;
   logic        in_frame;       // a frame is being written, not just armed
+  logic        count_then_file; // the counter bump is on the way to filing
 
   // Where this frame started, so a rejected frame can be rewound.
   logic [15:0] rbd_frame;
@@ -175,6 +176,18 @@ module ie_ru (
                 (is_multicast && !is_broadcast && (mc_all_i || mc_hit));
 
   wire frame_is_short = ({8'h00, min_frame_len_i} > (frame_len + 16'd4));
+
+  // What goes in the descriptor's status word.  A frame kept because SAV-BF is
+  // configured still says what was wrong with it - the driver decides what to
+  // do about that, but only if it is told.  Bit numbers are IE_FD_* in
+  // doc/drivers/NetBSD/i82586reg.h.
+  wire frame_good = !(err_bad || err_dribble || err_overrun || err_short);
+  wire [15:0] rfd_status = 16'h8000                              // C
+                         | (frame_good  ? 16'h2000 : 16'h0000)   // OK
+                         | (err_bad     ? 16'h0800 : 16'h0000)   // CRC
+                         | (err_dribble ? 16'h0400 : 16'h0000)   // alignment
+                         | (err_overrun ? 16'h0100 : 16'h0000)   // overrun
+                         | (err_short   ? 16'h0080 : 16'h0000);  // short
 
   // ---- request presented to the memory port -------------------------------
   always_comb begin
@@ -237,7 +250,7 @@ module ie_ru (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = rfd_addr + RFD_STATUS;
-        bus_wdata_o = 16'hA000;                     // C and OK
+        bus_wdata_o = rfd_status;
       end
       RU_FIN_RD_LINK: begin
         bus_req_o  = 1'b1;
@@ -300,6 +313,7 @@ module ie_ru (
       suspended       <= 1'b0;
       suspend_pending <= 1'b0;
       in_frame        <= 1'b0;
+      count_then_file <= 1'b0;
       rbd_frame       <= NULL_PTR;
       buf_frame       <= 24'h0;
       size_frame      <= 14'h0;
@@ -453,8 +467,9 @@ module ie_ru (
               err_bad     <= word_err[2];
               err_dribble <= word_err[1];
               err_overrun <= word_err[0];
-              in_frame    <= 1'b0;
-              state       <= RU_COUNT_ERR;
+              in_frame        <= 1'b0;
+              count_then_file <= 1'b0;
+              state           <= RU_COUNT_ERR;
               // Rewind to where the frame started; the buffers are ours again.
               rbd      <= rbd_frame;
               buf_addr <= buf_frame;
@@ -466,14 +481,22 @@ module ie_ru (
           // ---- filing a good frame -------------------------------------------
           RU_FIN_CLOSE_RBD:
             if (bus_ack_i) begin
-              if (rejected || err_overrun || err_short ||
-                  (err_bad && !save_bad_i) || (err_dribble && !save_bad_i)) begin
-                rbd      <= rbd_frame;
-                buf_addr <= buf_frame;
-                buf_size <= size_frame;
-                rbd_el   <= el_frame;
-                buf_off  <= 14'h0;
-                state    <= RU_COUNT_ERR;
+              // A frame that was not addressed to us is never handed over.
+              // Anything else that went wrong is only dropped when the host
+              // has not asked for bad frames to be saved.
+              if (rejected || (!save_bad_i && !frame_good)) begin
+                rbd             <= rbd_frame;
+                buf_addr        <= buf_frame;
+                buf_size        <= size_frame;
+                rbd_el          <= el_frame;
+                buf_off         <= 14'h0;
+                count_then_file <= 1'b0;
+                state           <= RU_COUNT_ERR;
+              end else if (!frame_good) begin
+                // Kept because of SAV-BF, but the error still counts: the
+                // drivers read these counters for their statistics.
+                count_then_file <= 1'b1;
+                state           <= RU_COUNT_ERR;
               end else begin
                 state <= RU_FIN_WR_RFD_RBD;
               end
@@ -524,7 +547,8 @@ module ie_ru (
                 2'd2: cnt_rsc <= err_value;
                 default: cnt_ovr <= err_value;
               endcase
-              state <= RU_READY;
+              count_then_file <= 1'b0;
+              state <= count_then_file ? RU_FIN_WR_RFD_RBD : RU_READY;
             end
 
           RU_NO_RESOURCE:

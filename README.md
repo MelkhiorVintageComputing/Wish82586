@@ -11,8 +11,7 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 The chip works end to end: it comes up, runs command lists, receives frames
 into the host's descriptor rings and transmits from them, with deferral,
 padding, FCS, collision retry and internal loopback.  What is left is
-saving bad frames, the AL-LOC = 0 transmit form, the diagnostic commands,
-and GMII.
+the AL-LOC = 0 transmit form, the diagnostic commands, and GMII.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
@@ -29,7 +28,7 @@ and GMII.
 | synchronous FIFO (`sync_fifo`)            | done, tested               |
 | internal loopback                         | done, tested               |
 | multicast address filtering               | exact, 8 entries           |
-| saving bad frames (SAV-BF)                | to do                      |
+| saving bad frames (SAV-BF)                | done, tested               |
 | transmit with AL-LOC = 0                  | to do                      |
 | TDR, DUMP, DIAGNOSE commands              | to do                      |
 | GMII                                      | later                      |

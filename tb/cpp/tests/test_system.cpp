@@ -413,9 +413,7 @@ TEST(sys_multicast_setup_and_filter) {
   CHECK_EQ(rx[0].dst, group);
 }
 
-TEST_PENDING(sys_receive_saves_bad_frames,
-             "SAV-BF keeps the frame but the descriptor status does not yet "
-             "carry the error bits") {
+TEST(sys_receive_saves_bad_frames) {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   ie::Config cfg;
@@ -432,6 +430,50 @@ TEST_PENDING(sys_receive_saves_bad_frames,
   CHECK_EQ(rx.size(), size_t(1));
   CHECK_MSG(rx[0].status & ie::RFD_ST_CRC, "the CRC error was not reported");
   CHECK_MSG(!(rx[0].status & ie::RFD_ST_OK), "a bad frame was marked good");
+  // Saving the frame does not stop it being counted.
+  CHECK_EQ(env.img().scb_crc_errs(), uint16_t(1));
+  CHECK_EQ(rx[0].data, f.payload);
+}
+
+TEST(sys_receive_reports_an_alignment_error) {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.save_bad_frames = true;
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  // A frame that ends on a nibble boundary: correct bytes, one nibble over.
+  EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 47));
+  Bytes wire = f.to_wire(true, true);
+  std::vector<uint8_t> nibbles;
+  for (uint8_t b : wire) {
+    nibbles.push_back(uint8_t(b & 0xf));
+    nibbles.push_back(uint8_t(b >> 4));
+  }
+  nibbles.push_back(0x9);
+  env.phy().inject_nibbles(nibbles);
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_MSG(rx[0].status & ie::RFD_ST_ALIGN, "the alignment error was not reported");
+  CHECK_EQ(env.img().scb_aln_errs(), uint16_t(1));
+}
+
+TEST(sys_receive_good_frame_reports_no_errors) {
+  bring_up(env);
+  EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(100, 48));
+  env.phy().inject(f);
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_EQ(rx[0].status, uint16_t(ie::RFD_ST_C | ie::RFD_ST_OK));
+  CHECK_EQ(env.img().scb_crc_errs(), uint16_t(0));
+  CHECK_EQ(env.img().scb_aln_errs(), uint16_t(0));
+  CHECK_EQ(env.img().scb_ovrn_errs(), uint16_t(0));
 }
 
 TEST_PENDING(sys_transmit_with_header_in_the_command_block,
