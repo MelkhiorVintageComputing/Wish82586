@@ -29,8 +29,8 @@ change anything in `wish82586_pkg.sv` or `i82586.h`, that test is what stops
 the testbench and the RTL from quietly agreeing with each other and with
 nothing else.
 
-Receive works; transmit is the part still missing.  The system-level tests for
-it are already written and marked pending.  Work proceeds test first: pick a
+Receive and transmit both work.  What is left is internal loopback, multicast
+filtering and the diagnostic commands.  Work proceeds test first: pick a
 pending test, implement the RTL, drop the marker.
 
 ## Commands
@@ -74,13 +74,17 @@ off there, including a `_unused` sink that keeps the linter quiet - shrink it
 as signals get consumed.
 
 Working blocks: `wb_csr` (control registers), `ie_core` (initialisation
-sequencer and SCB handler), `ie_cu` (command unit), `ie_ru` (receive unit),
-`mii_rx` (MII receive front end), `wb_master` (24-bit 8/16-bit accesses onto
-the 32-bit Wishbone port), `wb_arb` (three-way port sharing), `crc32_eth`
-(Ethernet FCS, `DATA_W` 4 for MII or 8), `sync_fifo`, `async_fifo`.
+sequencer and SCB handler), `ie_cu` (command unit, including TRANSMIT),
+`ie_ru` (receive unit), `mii_rx` and `mii_tx` (the two MII ends), `wb_master`
+(24-bit 8/16-bit accesses onto the 32-bit Wishbone port), `wb_arb` (three-way
+port sharing), `crc32_eth` (Ethernet FCS, `DATA_W` 4 for MII or 8),
+`sync_fifo`, `async_fifo`, `dp_ram` (transmit staging).
 
-`mii_rx` runs in the PHY's receive clock domain and is the only thing that
-does; everything crossing to the system clock goes through `async_fifo`.  Its
+`mii_rx` and `mii_tx` run in the PHY's clock domains.  Receive crosses to the
+system clock through `async_fifo`; transmit does not stream at all - the
+command unit stages a whole frame in `dp_ram` and hands it over with a four
+phase go/done handshake, which is what makes a collision retry cheap, since
+nothing has to be re-read from host memory.  Its
 FIFO word is `{end, err[2:0], data[7:0]}`: data words carry frame bytes, and a
 single end word closes the frame and reports a bad FCS, a dribble nibble or an
 overrun.
@@ -109,6 +113,10 @@ Ordering that matters, all of it learned from tests that failed:
 * Events do not arrive together: a command completing raises CX and the
   command unit going idle raises CNA a moment later.  Acknowledging once is
   not enough, which is why `IeDriver::ack_all()` loops.
+* `mii_tx` keeps `tx_en` asserted one cycle past the last nibble it assigns.
+  The nibble only reaches the wire on the following clock, so dropping enable
+  with it sends the frame a nibble short - which shows up as a frame one byte
+  small with a bad FCS, not as anything obviously timing related.
 
 The real 82586 has no software-visible registers, only RESET, CA and INT pins.
 `wb_csr` exposes those as a small Wishbone slave, and makes the SCP address

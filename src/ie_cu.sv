@@ -11,9 +11,14 @@
 // the opcode in bits [2:0].  Its status word gets C at bit 15, B at bit 14 and
 // OK at bit 13, which is what the drivers poll.
 //
-// Implemented: NOP, IA-SETUP, CONFIGURE.  MC-SETUP is accepted but its address
-// list is not stored yet, and TRANSMIT, TDR, DUMP and DIAGNOSE complete
-// without OK until the datapath exists.
+// Implemented: NOP, IA-SETUP, CONFIGURE and TRANSMIT.  MC-SETUP is accepted
+// but its address list is not stored yet; TDR, DUMP and DIAGNOSE complete
+// without OK.
+//
+// TRANSMIT copies the buffer chain into the staging RAM a byte at a time and
+// then hands it to mii_tx, which owns deferral, padding, the FCS and the retry
+// loop.  Staging the whole frame first is what lets a collision be retried
+// without going back to host memory.
 
 module ie_cu (
     input  logic        clk,
@@ -37,6 +42,19 @@ module ie_cu (
     output logic [47:0] ia_addr_o,      // individual address, first octet in [7:0]
     output logic [95:0] cfg_bytes_o,    // CONFIGURE bytes, byte 0 in [7:0]
 
+    // ---- transmit staging RAM and the transmitter --------------------------
+    output logic        tx_ram_we_o,
+    output logic [10:0] tx_ram_addr_o,
+    output logic [7:0]  tx_ram_data_o,
+    output logic        tx_go_o,
+    output logic [15:0] tx_len_o,
+    input  logic        tx_done_i,
+    input  logic        tx_ok_i,
+    input  logic [3:0]  tx_ncoll_i,
+    input  logic        tx_xcoll_i,
+    input  logic        tx_defer_i,
+    input  logic        tx_no_crs_i,
+
     // ---- memory port -------------------------------------------------------
     output logic        bus_req_o,
     output logic        bus_we_o,
@@ -59,6 +77,13 @@ module ie_cu (
     CU_WR_BUSY,
     CU_IA,
     CU_CFG,
+    CU_TX_RD_TBD,
+    CU_TX_RD_CNT,
+    CU_TX_RD_BUF_LO,
+    CU_TX_RD_BUF_HI,
+    CU_TX_RD_BYTE,
+    CU_TX_NEXT_TBD,
+    CU_TX_GO,
     CU_FINISH,
     CU_NEXT
   } state_e;
@@ -73,6 +98,16 @@ module ie_cu (
   logic        suspended;
   logic        suspend_pending;
   logic        abort_pending;
+
+  // Transmit staging.
+  logic [15:0] tbd;
+  logic [13:0] tbd_count;
+  logic        tbd_eof;
+  logic [23:0] tbd_buf;
+  logic [13:0] tbd_off;
+  logic [15:0] tx_bytes;
+  logic [15:0] tx_status;      // the extra bits a transmit puts in its status
+  logic        tx_done_s1, tx_done_s2;
 
   wire [23:0] cb_addr = cbbase_i + {8'h00, cb_off};
   wire [2:0]  opcode  = cmd[2:0];
@@ -110,11 +145,36 @@ module ie_cu (
         bus_req_o  = 1'b1;
         bus_addr_o = cb_addr + 24'd6 + {19'h0, idx, 1'b0};
       end
+      CU_TX_RD_TBD: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = cb_addr + 24'd6;
+      end
+      CU_TX_RD_CNT: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = cbbase_i + {8'h00, tbd};
+      end
+      CU_TX_RD_BUF_LO: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = cbbase_i + {8'h00, tbd} + 24'd4;
+      end
+      CU_TX_RD_BUF_HI: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = cbbase_i + {8'h00, tbd} + 24'd6;
+      end
+      CU_TX_RD_BYTE: begin
+        bus_req_o  = 1'b1;
+        bus_byte_o = 1'b1;
+        bus_addr_o = tbd_buf + {10'h0, tbd_off};
+      end
+      CU_TX_NEXT_TBD: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = cbbase_i + {8'h00, tbd} + 24'd2;
+      end
       CU_FINISH: begin
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = cb_addr;
-        bus_wdata_o = CB_ST_DONE | (ok ? CB_ST_OK : 16'h0);
+        bus_wdata_o = CB_ST_DONE | (ok ? CB_ST_OK : 16'h0) | tx_status;
       end
       default: ;
     endcase
@@ -137,9 +197,26 @@ module ie_cu (
       ev_cna_o        <= 1'b0;
       ia_addr_o       <= 48'h0;
       cfg_bytes_o     <= 96'h0;
+      tbd             <= 16'h0;
+      tbd_count       <= 14'h0;
+      tbd_eof         <= 1'b0;
+      tbd_buf         <= 24'h0;
+      tbd_off         <= 14'h0;
+      tx_bytes        <= 16'h0;
+      tx_status       <= 16'h0;
+      tx_done_s1      <= 1'b0;
+      tx_done_s2      <= 1'b0;
+      tx_go_o         <= 1'b0;
+      tx_len_o        <= 16'h0;
+      tx_ram_we_o     <= 1'b0;
+      tx_ram_addr_o   <= 11'h0;
+      tx_ram_data_o   <= 8'h0;
     end else begin
-      ev_cx_o  <= 1'b0;
-      ev_cna_o <= 1'b0;
+      ev_cx_o     <= 1'b0;
+      ev_cna_o    <= 1'b0;
+      tx_ram_we_o <= 1'b0;
+      tx_done_s1  <= tx_done_i;
+      tx_done_s2  <= tx_done_s1;
 
       if (suspend_i) suspend_pending <= 1'b1;
       if (abort_i)   abort_pending   <= 1'b1;
@@ -176,8 +253,9 @@ module ie_cu (
 
         CU_WR_BUSY:
           if (bus_ack_i) begin
-            idx <= 3'd0;
-            ok  <= 1'b1;
+            idx       <= 3'd0;
+            ok        <= 1'b1;
+            tx_status <= 16'h0;
             case (opcode)
               wish82586_pkg::CMD_NOP:       state <= CU_FINISH;
               wish82586_pkg::CMD_IA_SETUP:  state <= CU_IA;
@@ -185,7 +263,8 @@ module ie_cu (
               // TODO: store the multicast address list once there is a filter
               // to store it in.
               wish82586_pkg::CMD_MC_SETUP:  state <= CU_FINISH;
-              // TODO: TRANSMIT, TDR, DUMP and DIAGNOSE need the datapath.
+              wish82586_pkg::CMD_TRANSMIT: state <= CU_TX_RD_TBD;
+              // TODO: TDR, DUMP and DIAGNOSE.
               default: begin
                 ok    <= 1'b0;
                 state <= CU_FINISH;
@@ -216,6 +295,77 @@ module ie_cu (
               idx <= idx + 3'd1;
             end
           end
+
+        // ---- transmit ------------------------------------------------------
+        CU_TX_RD_TBD:
+          if (bus_ack_i) begin
+            tbd      <= bus_rdata_i;
+            tx_bytes <= 16'h0;
+            if (bus_rdata_i == 16'hffff) begin
+              // Nothing to send; report it rather than transmitting rubbish.
+              ok    <= 1'b0;
+              state <= CU_FINISH;
+            end else begin
+              state <= CU_TX_RD_CNT;
+            end
+          end
+
+        CU_TX_RD_CNT:
+          if (bus_ack_i) begin
+            tbd_count <= bus_rdata_i[13:0];
+            tbd_eof   <= bus_rdata_i[15];
+            tbd_off   <= 14'h0;
+            state     <= CU_TX_RD_BUF_LO;
+          end
+
+        CU_TX_RD_BUF_LO:
+          if (bus_ack_i) begin
+            tbd_buf[15:0] <= bus_rdata_i;
+            state         <= CU_TX_RD_BUF_HI;
+          end
+
+        CU_TX_RD_BUF_HI:
+          if (bus_ack_i) begin
+            tbd_buf[23:16] <= bus_rdata_i[7:0];
+            state          <= (tbd_count == 14'h0) ?
+                              (tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD) : CU_TX_RD_BYTE;
+          end
+
+        CU_TX_RD_BYTE:
+          if (bus_ack_i) begin
+            // TODO: a byte a cycle is simple but slow; the bus is 32 bits wide.
+            tx_ram_we_o   <= 1'b1;
+            tx_ram_addr_o <= tx_bytes[10:0];
+            tx_ram_data_o <= bus_rdata_i[7:0];
+            tx_bytes      <= tx_bytes + 16'd1;
+            if (tbd_off + 14'd1 >= tbd_count) begin
+              state <= tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD;
+            end else begin
+              tbd_off <= tbd_off + 14'd1;
+            end
+          end
+
+        CU_TX_NEXT_TBD:
+          if (bus_ack_i) begin
+            tbd <= bus_rdata_i;
+            if (bus_rdata_i == 16'hffff) state <= CU_TX_GO;
+            else                         state <= CU_TX_RD_CNT;
+          end
+
+        CU_TX_GO: begin
+          tx_len_o <= tx_bytes;
+          tx_go_o  <= 1'b1;
+          if (tx_go_o && tx_done_s2) begin
+            tx_go_o   <= 1'b0;
+            ok        <= tx_ok_i;
+            // Transmit status bits, see doc/drivers/NetBSD/i82586reg.h.
+            tx_status <= (tx_no_crs_i ? 16'h0400 : 16'h0000) |
+                         (tx_defer_i  ? 16'h0080 : 16'h0000) |
+                         (tx_xcoll_i  ? 16'h0020 : 16'h0000) |
+                         {12'h000, tx_ncoll_i};
+            state     <= CU_FINISH;
+          end
+        end
 
         CU_FINISH:
           if (bus_ack_i) begin

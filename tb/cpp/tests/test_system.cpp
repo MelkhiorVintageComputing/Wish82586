@@ -125,7 +125,7 @@ TEST(sys_command_suspend_and_resume) {
 // Transmit
 // ---------------------------------------------------------------------------
 
-TEST_PENDING(sys_transmit_one_frame, "the transmit path is not implemented") {
+TEST(sys_transmit_one_frame) {
   bring_up(env);
 
   EthFrame f(env.peer_mac(), env.local_mac(), 0x0800, random_payload(100, 1));
@@ -144,8 +144,7 @@ TEST_PENDING(sys_transmit_one_frame, "the transmit path is not implemented") {
   CHECK_EQ(w.data, f.to_wire(true, true));
 }
 
-TEST_PENDING(sys_transmit_pads_short_frames,
-             "the transmit path is not implemented") {
+TEST(sys_transmit_pads_short_frames) {
   bring_up(env);
 
   // 10 bytes of payload: the MAC has to pad the frame out to 60 bytes plus FCS.
@@ -159,8 +158,7 @@ TEST_PENDING(sys_transmit_pads_short_frames,
   CHECK(w.fcs_ok);
 }
 
-TEST_PENDING(sys_transmit_scattered_buffers,
-             "the transmit path is not implemented") {
+TEST(sys_transmit_scattered_buffers) {
   bring_up(env);
 
   EthFrame f(env.peer_mac(), env.local_mac(), 0x0800, random_payload(400, 3));
@@ -173,8 +171,7 @@ TEST_PENDING(sys_transmit_scattered_buffers,
   CHECK_EQ(w.data, f.to_wire(true, true));
 }
 
-TEST_PENDING(sys_transmit_maximum_length,
-             "the transmit path is not implemented") {
+TEST(sys_transmit_maximum_length) {
   bring_up(env);
   EthFrame f(env.peer_mac(), env.local_mac(), 0x0800, random_payload(1500, 4));
   CHECK_DRV(env.drv().transmit(f));
@@ -185,8 +182,7 @@ TEST_PENDING(sys_transmit_maximum_length,
   CHECK(w.fcs_ok);
 }
 
-TEST_PENDING(sys_transmit_retries_after_collision,
-             "collision handling is not implemented") {
+TEST(sys_transmit_retries_after_collision) {
   bring_up(env);
   env.phy().set_full_duplex(false);
   env.phy().force_collision(40);      // collide inside the preamble/data
@@ -320,7 +316,9 @@ TEST(sys_receive_out_of_resources) {
 // before putting the interface on the wire.
 // ---------------------------------------------------------------------------
 
-TEST_PENDING(sys_internal_loopback, "loopback is not implemented") {
+TEST_PENDING(sys_internal_loopback,
+             "internal loopback needs a path from the transmit side back into "
+             "the receive unit; the two live in different clock domains") {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   ie::Config cfg;

@@ -8,24 +8,27 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 
 ## Status
 
-The chip comes up, runs command lists, and receives: frames off the wire are
-filtered, checked and filed into the host's descriptor rings.  What is missing
-is transmit.
+The chip works end to end: it comes up, runs command lists, receives frames
+into the host's descriptor rings and transmits from them, with deferral,
+padding, FCS and collision retry.  What is left is the trimmings - internal
+loopback, multicast filtering, TDR and dump - and GMII.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
 | control registers (`wb_csr`)              | done, tested               |
 | Wishbone master (`wb_master`)             | done, tested               |
 | init sequencer and SCB handler (`ie_core`)| done, tested               |
-| command unit (`ie_cu`)                    | NOP, IA-SETUP, CONFIGURE   |
+| command unit (`ie_cu`)                    | NOP, IA, CONFIGURE, TRANSMIT |
 | receive unit (`ie_ru`)                    | done, tested               |
 | MII receive front end (`mii_rx`)          | done, tested               |
 | clock crossing (`async_fifo`)             | done, tested               |
+| MII transmitter (`mii_tx`)                | done, tested               |
 | memory arbiter (`wb_arb`)                 | done, tested               |
 | Ethernet FCS (`crc32_eth`)                | done, tested               |
 | synchronous FIFO (`sync_fifo`)            | done, tested               |
-| transmit datapath and MII transmit        | to do                      |
+| internal loopback                         | to do                      |
 | multicast address filtering               | to do                      |
+| TDR, DUMP, DIAGNOSE commands              | to do                      |
 | GMII                                      | later                      |
 
 The system-level tests for everything in the "to do" list are already written

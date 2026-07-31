@@ -139,6 +139,21 @@ module wish82586 #(
   logic [47:0] ia_addr;
   logic [95:0] cfg_bytes;
 
+  // Transmit staging and the transmitter handshake.
+  logic        tx_ram_we;
+  logic [10:0] tx_ram_waddr, tx_ram_raddr;
+  logic [7:0]  tx_ram_wdata, tx_ram_rdata;
+  logic        tx_go, tx_done, tx_ok, tx_xcoll, tx_defer, tx_no_crs;
+  logic [3:0]  tx_ncoll;
+  logic [15:0] tx_len;
+
+  // CONFIGURE parameters the transmitter needs, by byte offset in the block.
+  wire [7:0]  cfg_ifs      = cfg_bytes[47:40];
+  wire [10:0] cfg_slot     = {cfg_bytes[58:56], cfg_bytes[55:48]};
+  wire [3:0]  cfg_retry    = cfg_bytes[63:60];
+  wire        cfg_no_crc   = cfg_bytes[68];
+  wire [7:0]  cfg_min_len  = cfg_bytes[87:80];
+
   ie_core u_core (
       .clk          (clk),
       .rst          (rst),
@@ -190,8 +205,19 @@ module wish82586 #(
       .cus_o        (cu_cus),
       .ev_cx_o      (ev_cx),
       .ev_cna_o     (ev_cna),
-      .ia_addr_o    (ia_addr),
-      .cfg_bytes_o  (cfg_bytes),
+      .ia_addr_o     (ia_addr),
+      .cfg_bytes_o   (cfg_bytes),
+      .tx_ram_we_o   (tx_ram_we),
+      .tx_ram_addr_o (tx_ram_waddr),
+      .tx_ram_data_o (tx_ram_wdata),
+      .tx_go_o       (tx_go),
+      .tx_len_o      (tx_len),
+      .tx_done_i     (tx_done),
+      .tx_ok_i       (tx_ok),
+      .tx_ncoll_i    (tx_ncoll),
+      .tx_xcoll_i    (tx_xcoll),
+      .tx_defer_i    (tx_defer),
+      .tx_no_crs_i   (tx_no_crs),
       .bus_req_o    (cu_req),
       .bus_we_o     (cu_we),
       .bus_byte_o   (cu_byte),
@@ -322,12 +348,41 @@ module wish82586 #(
       .wbm_err_i (wbm_err_i)
   );
 
-  // ---------------------------------------------------------------------------
-  // The transmit datapath is still to be written, so nothing goes out.
-  // ---------------------------------------------------------------------------
-  assign mii_txd   = '0;
-  assign mii_tx_en = 1'b0;
-  assign mii_tx_er = 1'b0;
+  // Transmit path: the command unit stages a frame here, mii_tx clocks it out.
+  dp_ram #(.WIDTH(8), .DEPTH(2048)) u_tx_ram (
+      .wclk    (clk),
+      .wr_en   (tx_ram_we),
+      .wr_addr (tx_ram_waddr),
+      .wr_data (tx_ram_wdata),
+      .rclk    (mii_tx_clk),
+      .rd_addr (tx_ram_raddr),
+      .rd_data (tx_ram_rdata)
+  );
+
+  mii_tx u_mii_tx (
+      .tx_clk        (mii_tx_clk),
+      .rst           (rst),
+      .go_i          (tx_go),
+      .len_i         (tx_len),
+      .done_o        (tx_done),
+      .ok_o          (tx_ok),
+      .ncoll_o       (tx_ncoll),
+      .xcoll_o       (tx_xcoll),
+      .defer_o       (tx_defer),
+      .no_crs_o      (tx_no_crs),
+      .retry_limit_i (cfg_retry),
+      .ifs_i         (cfg_ifs),
+      .slot_time_i   (cfg_slot),
+      .min_len_i     (cfg_min_len),
+      .no_crc_i      (cfg_no_crc),
+      .ram_addr_o    (tx_ram_raddr),
+      .ram_data_i    (tx_ram_rdata),
+      .txd           (mii_txd),
+      .tx_en         (mii_tx_en),
+      .tx_er         (mii_tx_er),
+      .crs           (mii_crs),
+      .col           (mii_col)
+  );
 
   assign mdc       = 1'b0;
   assign mdio_o    = 1'b0;
@@ -337,8 +392,7 @@ module wish82586 #(
   // ia_addr and cfg_bytes are already captured from the IA-SETUP and CONFIGURE
   // commands and are waiting for the transmit and receive paths to use them.
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, mii_tx_clk, mii_crs, mii_col, mdio_i, cfg_bytes,
-                   rx_active, rx_bytes};
+  wire _unused = &{1'b0, mdio_i, cfg_bytes, rx_active, rx_bytes};
   // verilator lint_on UNUSED
 
 endmodule
