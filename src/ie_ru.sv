@@ -41,6 +41,13 @@ module ie_ru (
     input  logic [47:0] ia_addr_i,      // first octet in [7:0]
     input  logic        promisc_i,
     input  logic        no_bcast_i,
+
+    // ---- multicast list, loaded by the MC-SETUP command --------------------
+    input  logic        mc_clear_i,
+    input  logic        mc_wr_i,
+    input  logic [47:0] mc_addr_i,
+    input  logic        mc_all_i,       // list too long to hold, take them all
+
     input  logic        save_bad_i,
     input  logic [7:0]  min_frame_len_i,
 
@@ -135,12 +142,37 @@ module ie_ru (
   wire [7:0] word_data = rx_data_i[7:0];
 
   // ---- address filter ------------------------------------------------------
+  // The multicast list is held exactly, up to MC_SLOTS entries.  A driver that
+  // asks for more than that gets every multicast frame instead of a silently
+  // shortened list; see doc/interface.md.
+  localparam int MC_SLOTS = 8;
+
+  logic [47:0] mc [MC_SLOTS];
+  logic [3:0]  mc_n;
+
+  always_ff @(posedge clk) begin
+    if (rst || core_rst_i) begin
+      mc_n <= 4'd0;
+    end else if (mc_clear_i) begin
+      mc_n <= 4'd0;
+    end else if (mc_wr_i && mc_n < 4'(MC_SLOTS)) begin
+      mc[mc_n[2:0]] <= mc_addr_i;
+      mc_n     <= mc_n + 4'd1;
+    end
+  end
+
+  logic mc_hit;
+  always_comb begin
+    mc_hit = 1'b0;
+    for (int i = 0; i < MC_SLOTS; i++)
+      if ((4'(i) < mc_n) && (dst == mc[i])) mc_hit = 1'b1;
+  end
+
   wire is_broadcast = (dst == 48'hffff_ffff_ffff);
   wire is_multicast = dst[0];              // group bit of the first octet
   wire is_ours      = (dst == ia_addr_i);
-  // TODO: other multicast addresses need the list from MC-SETUP, which the
-  // command unit does not store yet, so only broadcast is accepted for now.
-  wire accept = promisc_i || is_ours || (is_broadcast && !no_bcast_i);
+  wire accept = promisc_i || is_ours || (is_broadcast && !no_bcast_i) ||
+                (is_multicast && !is_broadcast && (mc_all_i || mc_hit));
 
   wire frame_is_short = ({8'h00, min_frame_len_i} > (frame_len + 16'd4));
 
@@ -508,7 +540,7 @@ module ie_ru (
   end
 
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, bus_err_i, is_multicast};
+  wire _unused = &{1'b0, bus_err_i};
   // verilator lint_on UNUSED
 
 endmodule

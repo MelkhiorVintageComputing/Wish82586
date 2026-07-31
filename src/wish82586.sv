@@ -157,6 +157,8 @@ module wish82586 #(
 
   // Internal loopback: the transmit side hands frames straight to the receive
   // unit through this FIFO instead of putting them on the wire.
+  logic        mc_clear, mc_wr, mc_all;
+  logic [47:0] mc_addr;
   logic        lb_wr, lb_full, lb_rd, lb_empty;
   logic [11:0] lb_wdata, lb_rdata;
   logic [6:0]  lb_level;   // observation only
@@ -229,6 +231,10 @@ module wish82586 #(
       .lb_wr_o       (lb_wr),
       .lb_data_o     (lb_wdata),
       .lb_full_i     (lb_full),
+      .mc_clear_o    (mc_clear),
+      .mc_wr_o       (mc_wr),
+      .mc_addr_o     (mc_addr),
+      .mc_all_o      (mc_all),
       .bus_req_o    (cu_req),
       .bus_we_o     (cu_we),
       .bus_byte_o   (cu_byte),
@@ -305,6 +311,10 @@ module wish82586 #(
       .ia_addr_i       (ia_addr),
       .promisc_i       (cfg_bytes[64]),
       .no_bcast_i      (cfg_bytes[65]),
+      .mc_clear_i      (mc_clear),
+      .mc_wr_i         (mc_wr),
+      .mc_addr_i       (mc_addr),
+      .mc_all_i        (mc_all),
       .save_bad_i      (cfg_bytes[23]),
       .min_frame_len_i (cfg_bytes[87:80]),
       .rx_empty_i      (ru_src_empty),

@@ -93,6 +93,25 @@ The chip is driven entirely through shared memory, exactly as the drivers in
    attention to make the chip look at the SCB command word, and acknowledge
    bits to clear status.
 
+### Multicast filtering
+
+MC-SETUP hands the chip a list of addresses.  Wish82586 holds eight of them
+and matches exactly.  A list longer than that makes it accept **every**
+multicast frame rather than filter on a silently shortened list: too many
+frames is something the driver's software filter deals with every day, too
+few is a bug the driver cannot see.  NetBSD's `ie_mc_reset()` does the same
+thing on its own side once the list outgrows the transmit buffer.
+
+An MC-SETUP with a byte count of zero clears the list, which turns multicast
+reception off.  Broadcast is not affected: it has its own configuration bit.
+
+The real part is understood to hash addresses into a table rather than hold
+them exactly, which is how it scales past a handful.  Nothing in
+`doc/drivers` defines that hash, and guessing it would produce a filter that
+agrees with our own testbench and with nothing else, so exact matching with
+an honest fallback is what is implemented.  If the hash is ever pinned down
+from a datasheet, this is the piece to revisit.
+
 Command opcodes, status bits and structure offsets are in
 `src/wish82586_pkg.sv` (RTL) and `tb/cpp/i82586.h` (testbench).  The two are
 kept in step by hand - if you touch one, touch the other - and

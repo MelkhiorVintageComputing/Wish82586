@@ -65,6 +65,12 @@ module ie_cu (
     output logic [11:0] lb_data_o,
     input  logic        lb_full_i,
 
+    // ---- multicast list, streamed to the receive unit ----------------------
+    output logic        mc_clear_o,     // one cycle, start of a new list
+    output logic        mc_wr_o,        // one cycle, mc_addr_o is valid
+    output logic [47:0] mc_addr_o,      // first octet in [7:0]
+    output logic        mc_all_o,       // more addresses than can be stored
+
     // ---- memory port -------------------------------------------------------
     output logic        bus_req_o,
     output logic        bus_we_o,
@@ -96,6 +102,8 @@ module ie_cu (
     CU_TX_GO,
     CU_TX_LB_PAD,
     CU_TX_LB_END,
+    CU_MC_RD_CNT,
+    CU_MC_RD_ADDR,
     CU_FINISH,
     CU_NEXT
   } state_e;
@@ -120,6 +128,21 @@ module ie_cu (
   logic [15:0] tx_bytes;
   logic [15:0] tx_status;      // the extra bits a transmit puts in its status
   logic        tx_done_s1, tx_done_s2;
+
+  // Multicast setup.  The command gives a byte count, six bytes per address;
+  // only as many as the receive unit can hold are fetched.
+  logic [15:0] mc_off;         // byte offset of the address being read
+  logic [3:0]  mc_left;        // addresses still to fetch
+
+  wire [15:0] mc_bytes = bus_rdata_i;   // valid while the count is being read
+  wire [3:0]  mc_n = (mc_bytes >= 16'd48) ? 4'd8 :
+                     (mc_bytes >= 16'd42) ? 4'd7 :
+                     (mc_bytes >= 16'd36) ? 4'd6 :
+                     (mc_bytes >= 16'd30) ? 4'd5 :
+                     (mc_bytes >= 16'd24) ? 4'd4 :
+                     (mc_bytes >= 16'd18) ? 4'd3 :
+                     (mc_bytes >= 16'd12) ? 4'd2 :
+                     (mc_bytes >= 16'd6)  ? 4'd1 : 4'd0;
 
   wire [23:0] cb_addr = cbbase_i + {8'h00, cb_off};
   wire [2:0]  opcode  = cmd[2:0];
@@ -182,6 +205,14 @@ module ie_cu (
         bus_req_o  = 1'b1;
         bus_addr_o = cbbase_i + {8'h00, tbd} + 24'd2;
       end
+      CU_MC_RD_CNT: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = cb_addr + 24'd6;
+      end
+      CU_MC_RD_ADDR: begin
+        bus_req_o  = 1'b1;
+        bus_addr_o = cb_addr + {8'h00, mc_off} + {19'h0, idx, 1'b0};
+      end
       CU_FINISH: begin
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
@@ -225,11 +256,19 @@ module ie_cu (
       tx_ram_data_o   <= 8'h0;
       lb_wr_o         <= 1'b0;
       lb_data_o       <= 12'h0;
+      mc_clear_o      <= 1'b0;
+      mc_wr_o         <= 1'b0;
+      mc_addr_o       <= 48'h0;
+      mc_all_o        <= 1'b0;
+      mc_off          <= 16'h0;
+      mc_left         <= 4'h0;
     end else begin
       ev_cx_o     <= 1'b0;
       ev_cna_o    <= 1'b0;
       tx_ram_we_o <= 1'b0;
       lb_wr_o     <= 1'b0;
+      mc_clear_o  <= 1'b0;
+      mc_wr_o     <= 1'b0;
       tx_done_s1  <= tx_done_i;
       tx_done_s2  <= tx_done_s1;
 
@@ -275,9 +314,7 @@ module ie_cu (
               wish82586_pkg::CMD_NOP:       state <= CU_FINISH;
               wish82586_pkg::CMD_IA_SETUP:  state <= CU_IA;
               wish82586_pkg::CMD_CONFIGURE: state <= CU_CFG;
-              // TODO: store the multicast address list once there is a filter
-              // to store it in.
-              wish82586_pkg::CMD_MC_SETUP:  state <= CU_FINISH;
+              wish82586_pkg::CMD_MC_SETUP:  state <= CU_MC_RD_CNT;
               wish82586_pkg::CMD_TRANSMIT: state <= CU_TX_RD_TBD;
               // TODO: TDR, DUMP and DIAGNOSE.
               default: begin
@@ -306,6 +343,35 @@ module ie_cu (
               else                        idx   <= 3'd1;
             end else if (idx + 3'd1 >= cfg_words) begin
               state <= CU_FINISH;
+            end else begin
+              idx <= idx + 3'd1;
+            end
+          end
+
+        // ---- multicast setup -----------------------------------------------
+        // The count is in bytes, six per address.  More addresses than the
+        // receive unit can hold makes it take every multicast frame instead;
+        // see doc/interface.md.
+        CU_MC_RD_CNT:
+          if (bus_ack_i) begin
+            mc_clear_o <= 1'b1;
+            mc_all_o   <= (bus_rdata_i > 16'd48);
+            mc_left    <= mc_n;
+            mc_off     <= 16'd8;
+            idx        <= 3'd0;
+            if (bus_rdata_i < 16'd6) state <= CU_FINISH;
+            else                     state <= CU_MC_RD_ADDR;
+          end
+
+        CU_MC_RD_ADDR:
+          if (bus_ack_i) begin
+            mc_addr_o[{idx[1:0], 4'h0} +: 16] <= bus_rdata_i;
+            if (idx == 3'd2) begin
+              mc_wr_o <= 1'b1;
+              idx     <= 3'd0;
+              mc_off  <= mc_off + 16'd6;
+              mc_left <= mc_left - 4'd1;
+              if (mc_left == 4'd1) state <= CU_FINISH;
             end else begin
               idx <= idx + 3'd1;
             end

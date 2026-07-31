@@ -389,9 +389,7 @@ TEST(sys_broadcast_can_be_disabled) {
 // does not provide yet; they are the todo list.
 // ---------------------------------------------------------------------------
 
-TEST_PENDING(sys_multicast_setup_and_filter,
-             "MC-SETUP is accepted but its address list is not stored, so "
-             "multicast other than broadcast is not matched") {
+TEST(sys_multicast_setup_and_filter) {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   CHECK_DRV(env.drv().configure(ie::Config()));
@@ -471,6 +469,87 @@ TEST_PENDING(sys_tdr_command,
   // problem.
   const uint16_t tdr = env.mem().rd16(env.img().addr_of(cb) + 6);
   CHECK_EQ(tdr & 0x7000, 0);
+}
+
+
+TEST(sys_multicast_several_groups) {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  CHECK_DRV(env.drv().configure(ie::Config()));
+
+  std::vector<MacAddr> groups;
+  for (int i = 0; i < 8; i++)
+    groups.push_back(MacAddr(0x01, 0x00, 0x5e, 0x00, 0x01, uint8_t(i)));
+  CHECK_DRV(env.drv().mc_setup(groups));
+
+  env.img().build_rfa(8, 16, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  // The first, the last, and one that was never asked for.
+  EthFrame a(groups.front(), env.peer_mac(), 0x0800, random_payload(64, 50));
+  EthFrame b(groups.back(), env.peer_mac(), 0x0800, random_payload(64, 51));
+  EthFrame c(MacAddr(0x01, 0x00, 0x5e, 0x00, 0x01, 0x40), env.peer_mac(), 0x0800,
+             random_payload(64, 52));
+  env.phy().inject(c);
+  env.phy().inject(a);
+  env.phy().inject(b);
+  CHECK_DRV(env.drv().wait_rx(2));
+  env.tick(3000);
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_MSG(rx.size() == 2, "the multicast filter kept the wrong number of frames");
+  CHECK_EQ(rx[0].dst, a.dst);
+  CHECK_EQ(rx[1].dst, b.dst);
+}
+
+TEST(sys_multicast_empty_list_disables_multicast) {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  CHECK_DRV(env.drv().configure(ie::Config()));
+  CHECK_DRV(env.drv().mc_setup({MacAddr(0x01, 0x00, 0x5e, 0, 0, 1)}));
+  CHECK_DRV(env.drv().mc_setup({}));      // an empty list turns them all off
+
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  EthFrame group(MacAddr(0x01, 0x00, 0x5e, 0, 0, 1), env.peer_mac(), 0x0800,
+                 random_payload(64, 53));
+  EthFrame mine(env.local_mac(), env.peer_mac(), 0x0800, random_payload(64, 54));
+  env.phy().inject(group);
+  env.phy().inject(mine);
+  CHECK_DRV(env.drv().wait_rx(1));
+  env.tick(3000);
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_MSG(rx.size() == 1, "a multicast frame was kept after the list was cleared");
+  CHECK_EQ(rx[0].dst, mine.dst);
+}
+
+TEST(sys_multicast_overflow_takes_everything) {
+  // More addresses than the receive unit can hold: rather than filter on a
+  // silently shortened list and drop frames the driver asked for, the chip
+  // takes every multicast frame and lets software sort them out.
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  CHECK_DRV(env.drv().configure(ie::Config()));
+
+  std::vector<MacAddr> groups;
+  for (int i = 0; i < 12; i++)
+    groups.push_back(MacAddr(0x01, 0x00, 0x5e, 0x00, 0x02, uint8_t(i)));
+  CHECK_DRV(env.drv().mc_setup(groups));
+
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  // One from beyond the eighth slot, which an exact-list-only filter would
+  // have thrown away.
+  EthFrame late(groups[11], env.peer_mac(), 0x0800, random_payload(64, 55));
+  env.phy().inject(late);
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_EQ(rx[0].dst, late.dst);
 }
 
 }  // namespace wtb
