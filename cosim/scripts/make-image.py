@@ -3,16 +3,23 @@
 #
 # Install NetBSD onto a disk image by driving sysinst over the serial console.
 #
-# There is no display anywhere in this setup, so the install is done the same
-# way it would be on a headless machine: boot the serial console image, and
-# answer the installer's menus by sending the keys a person would.  The image
-# is not in git - this script is, and it is what puts the image back.
+# There is no display anywhere in this setup, so the install is done the way it
+# would be on a headless machine: boot the serial console image and answer the
+# installer's menus.  The image is not in git - this script is, and it is what
+# puts the image back.
 #
-# The menus are matched on short, stable pieces of text rather than on exact
-# screens, because sysinst redraws constantly and the exact layout shifts
-# between releases.  Run with --interactive to be dropped into the console
-# when something does not match, which is the quickest way to find out what
-# a new release is asking for.
+# sysinst is a full screen program, so what comes out of the serial port is not
+# a transcript: it is cursor movements, clears and redraws, and every redraw
+# repeats every line of the screen it paints.  Matching patterns against that
+# stream finds text that is no longer on screen - which is how an earlier
+# version of this script answered "install to hard disk" and then immediately
+# picked "exit install system", four lines below it on the same menu, and quit
+# the installer.
+#
+# So the stream goes through a terminal emulator and the matching is done
+# against the screen as rendered.  A line matches only if it is on screen now,
+# and the menu letter is read off that same row, which also means the letters
+# moving between screens stops mattering.
 
 import argparse
 import os
@@ -27,69 +34,81 @@ try:
 except ImportError:
     sys.exit("python3-pexpect is not installed; see doc/cosimulation.md")
 
+try:
+    import pyte
+except ImportError:
+    sys.exit("python3-pyte is not installed; see doc/cosimulation.md")
 
-class Installer:
-    def __init__(self, child, log):
+
+class Console:
+    """A QEMU serial console, rendered rather than merely logged."""
+
+    def __init__(self, child, log, cols=80, rows=24):
         self.child = child
         self.log = log
+        self.screen = pyte.Screen(cols, rows)
+        self.stream = pyte.ByteStream(self.screen)
 
-    def wait(self, patterns, timeout=180, what=""):
-        """Waits for any of patterns; returns which one matched."""
-        if isinstance(patterns, str):
-            patterns = [patterns]
+    def pump(self, timeout=0.2):
+        """Reads what is available and paints it.  True if anything arrived."""
         try:
-            return self.child.expect(patterns, timeout=timeout)
+            data = self.child.read_nonblocking(8192, timeout)
         except pexpect.TIMEOUT:
-            tail = self.child.before[-2000:] if self.child.before else b""
-            raise SystemExit(
-                "timed out waiting for %s\nlast output:\n%s"
-                % (what or patterns, tail.decode("utf-8", "replace")))
+            return False
         except pexpect.EOF:
-            raise SystemExit("QEMU exited while waiting for %s" % (what or patterns))
+            raise SystemExit("QEMU exited\n" + self.dump())
+        self.log.write(data)
+        self.log.flush()
+        self.stream.feed(data)
+        return True
 
-    def drain(self, quiet=1.2):
-        """Swallows whatever is still arriving, up to a quiet period.
+    def text(self):
+        return "\n".join(self.screen.display)
 
-        sysinst paints a whole screen at a time, and a menu holds every one of
-        its entries at once.  Without this, the text left in the buffer after
-        an answer is matched against the next time round, and an entry further
-        down the screen just answered gets picked - which is how "install to
-        hard disk" was followed by "exit install system", both being lines of
-        the same menu.
+    def settled(self, quiet=1.0, limit=3600):
+        """Pumps until the screen has stopped changing for `quiet` seconds.
+
+        During the extract the screen changes constantly, so this simply keeps
+        reading until it stops, which is when the next question is up.
         """
-        try:
-            self.child.expect(pexpect.TIMEOUT, timeout=quiet)
-        except pexpect.EOF:
-            pass
+        prev = self.text()
+        idle = 0.0
+        start = time.time()
+        while idle < quiet:
+            if time.time() - start > limit:
+                break
+            self.pump(0.2)
+            now = self.text()
+            if now != prev:
+                prev, idle = now, 0.0
+            else:
+                idle += 0.2
+        return prev
 
-    def send(self, text, delay=0.3):
+    def send(self, text, delay=0.2):
         time.sleep(delay)
         self.child.send(text)
 
-    def line(self, text, delay=0.3):
-        self.send(text + "\r", delay)
+    def line(self, text=""):
+        self.send(text + "\r")
 
-    def choose(self, label, timeout=180):
-        """Picks the menu entry whose text contains label.
+    def letter_for(self, label, text=None):
+        """The menu letter of the row whose text contains label, or None.
 
-        sysinst's menus keep the same wording but not the same letters - "use
-        the entire disk" is a on one screen and b on the next - so the letter
-        is read off the screen rather than assumed.  That is also what makes
-        this survive a NetBSD release adding an option somewhere.
+        Not anchored to the start of the line: a menu row renders as
+
+            x>a: Installation messages in English         x
+
+        where the x is the box border - pyte draws the DEC line drawing set as
+        ASCII letters - and the > is the cursor on the selected entry.
         """
-        pat = re.compile(br"([a-z]):\s*" + label.encode())
-        try:
-            self.child.expect(pat, timeout=timeout)
-        except pexpect.TIMEOUT:
-            tail = self.child.before[-2000:] if self.child.before else b""
-            raise SystemExit("no menu entry matching %r\nlast output:\n%s"
-                             % (label, tail.decode("utf-8", "replace")))
-        except pexpect.EOF:
-            raise SystemExit("QEMU exited looking for a menu entry %r" % label)
-        letter = self.child.match.group(1).decode()
-        print("   %s -> %s" % (label, letter))
-        self.line(letter)
-        return letter
+        if text is None:
+            text = self.text()
+        m = re.search(r"([a-z]):\s*" + label, text)
+        return m.group(1) if m else None
+
+    def dump(self):
+        return "\n".join("  | " + r.rstrip() for r in self.screen.display)
 
 
 def build(args):
@@ -126,7 +145,7 @@ def build(args):
         # its root.  pc still has an ISA bus hanging off the LPC bridge, which
         # is where the 82586 card will go, so nothing is given up by using it.
         "-M", "pc",
-        "-m", "256",              # the install ramdisk does not fit in 64
+        "-m", args.memory,        # the install ramdisk does not fit in 64
         "-drive", "file=%s,format=qcow2,if=ide,index=0" % image,
         "-drive", "file=%s,format=raw,if=ide,index=2,media=cdrom" % iso,
         "-boot", "d",
@@ -138,12 +157,12 @@ def build(args):
     print("   " + " ".join(cmd))
 
     log = open(logpath, "wb")
-    child = pexpect.spawn(cmd[0], cmd[1:], timeout=300, encoding=None)
-    child.logfile = log
-    inst = Installer(child, log)
+    child = pexpect.spawn(cmd[0], cmd[1:], timeout=None, encoding=None,
+                          dimensions=(24, 80))
+    con = Console(child, log)
 
     try:
-        run_sysinst(inst, args)
+        run_sysinst(con, args)
     finally:
         log.close()
         print("== console log in %s" % logpath)
@@ -151,94 +170,132 @@ def build(args):
     print("== installed to %s" % image)
 
 
-def run_sysinst(inst, args):
+def run_sysinst(con, args):
     """Answers whatever screen sysinst puts up, until the install is done.
 
-    Driving sysinst blind, a fixed sequence of answers is always one surprise
-    behind: screens are optional, their order shifts with the state of the
-    disk, and the menu letters move between screens.  So this is a table -
-    each row is something that might appear and what to do about it - and the
-    loop answers whatever comes up.  Supporting a new release is usually one
-    more row.
-
-    Where the pattern is the menu line itself, it captures the letter and the
-    answer is that letter: matching a line and then searching for it again
-    would look past the match and find the wrong entry.  Where the pattern is
-    the question above a menu, the answer is found by searching forward.
+    Each row is something that might be on screen and what to do about it.  The
+    first row whose text is on the *current* screen wins, so the order only
+    matters where two of them could be up at once.
     """
-    done = ["no"]
-
-    def letter():
-        inst.line(inst.child.match.group(1).decode())
-
-    def enter():
-        inst.line("")
-
-    extracted = ["no"]
-
-    def finish():
-        # "Exit Install System" is also a line on the main menu, so it only
-        # means the end once the sets have actually gone in.
-        if extracted[0] != "yes":
-            inst.choose("Install NetBSD to hard disk")
-            return
-        inst.line(inst.child.match.group(1).decode())
-        done[0] = "yes"
-
-    def note_extracted():
-        extracted[0] = "yes"
-        inst.line("")
-
-    def find(label):
-        return lambda: inst.choose(label)
-
     want_sets = "Minimal installation" if args.minimal else "Full installation"
+    state = {"done": False, "extracted": False}
 
-    # First match wins, so the specific rows come before the general ones.
+    def pick(label):
+        def act(text):
+            letter = con.letter_for(label, text)
+            if letter is None:
+                raise SystemExit("no entry %r on screen:\n%s" % (label, con.dump()))
+            print("        %s -> %s" % (label, letter))
+            con.line(letter)
+        return act
+
+    def enter(text):
+        con.line()
+
+    def exit_installer(text):
+        # "Exit Install System" is also on the main menu, so it only means the
+        # end once the sets have actually gone in.
+        if not state["extracted"]:
+            pick("Install NetBSD to hard disk")(text)
+            return
+        pick("Exit Install System")(text)
+        state["done"] = True
+
+    def extracted(text):
+        state["extracted"] = True
+        con.line()
+
     table = [
-        (br"Terminal type",                                    enter),
-        (br"([a-z]):\s*Installation messages in English",      letter),
-        (br"([a-z]):\s*Install NetBSD to hard disk",           letter),
-        (br"partitioning scheme",                  find("Master Boot Record")),
-        (br"([a-z]):\s*This is the correct geometry",          letter),
-        (br"([a-z]):\s*Use the entire disk",                   letter),
-        (br"install the NetBSD bootcode",                      find("Yes")),
-        (br"([a-z]):\s*Use existing partition sizes",          letter),
-        (br"([a-z]):\s*Partition sizes ok",                    letter),
-        (br"name for your NetBSD disk",                        enter),
-        (br"([a-z]):\s*" + want_sets.encode(),                 letter),
-        (br"([a-z]):\s*CD-ROM",                                letter),
-        (br"([a-z]):\s*Continue",                              letter),
-        (br"([a-z]):\s*Finished configuring",                  letter),
-        (br"Configure network",                    find("Finished configuring")),
-        (br"([a-z]):\s*Exit Install System",                   finish),
-        (br"Hit enter to continue",                            note_extracted),
-        (br"([a-z]):\s*Yes",                                   letter),
-        (br"[Ss]hall we continue",                             find("Yes")),
-        (br"#\s",                                              enter),
+        # The boot loader counts down to booting anyway; RETURN takes its
+        # default straight away.  Once only: pressing it does not clear the
+        # screen, the spinner just starts changing underneath the menu, so a
+        # row that could fire twice would fire until the guard stopped it.
+        ("Choose an option; RETURN for default", enter, True),
+        ("Terminal type",                    enter),
+        ("Installation messages in English", pick("Installation messages in English")),
+        # Only one disk is attached, so wd0 is the one to install onto.
+        ("Available disks",                  pick("wd0")),
+        ("partitioning scheme",              pick("Master Boot Record")),
+        ("This is the correct geometry",     pick("This is the correct geometry")),
+        ("Use the entire disk",              pick("Use the entire disk")),
+        ("install the NetBSD bootcode",      pick("Yes")),
+        # 10.1 offers "default"; older releases said "existing".
+        (r"Use (default|existing) partition sizes",
+                                             pick(r"Use (default|existing) partition sizes")),
+        ("Partition sizes ok",               pick("Partition sizes ok")),
+        ("name for your NetBSD disk",        enter),
+        (want_sets,                          pick(want_sets)),
+        ("CD-ROM",                           pick("CD-ROM")),
+        ("Hit enter to continue",            extracted),
+        ("Finished configuring",             pick("Finished configuring")),
+        ("Configure network",                pick("Finished configuring")),
+        ("Install NetBSD to hard disk",      pick("Install NetBSD to hard disk")),
+        ("Exit Install System",              exit_installer),
+        (r"[a-z]:\s*Continue",               pick("Continue")),
+        (r"[a-z]:\s*Yes",                    pick("Yes")),
     ]
 
-    patterns = [p for p, _ in table]
     seen = {}
-    for step in range(300):
-        idx = inst.wait(patterns, timeout=3600, what="any sysinst screen")
-        name = patterns[idx][:44].decode("ascii", "replace")
-        seen[idx] = seen.get(idx, 0) + 1
-        if seen[idx] > 15:
-            raise SystemExit("stuck on %r; see the console log" % name)
-        print("   [%d] %s" % (step, name))
-        table[idx][1]()
-        inst.drain()
-        if done[0] == "yes":
+    spent = set()          # rows that have had their turn
+    pending = None         # a row that has been answered and must go away
+    quiet_since = time.time()
+    for step in range(600):
+        text = con.settled()
+        # Wait for the question just answered to leave the screen before
+        # answering anything else.  Comparing whole screens is not enough:
+        # pressing a letter moves the selection marker, so the screen differs
+        # while the same menu is still up, and the question gets answered
+        # twice.  The second keystroke then lands on whatever came next -
+        # pressing b for "master boot record" twice put the second b into the
+        # following menu, where it meant "set the geometry by hand", and the
+        # install ended up in a prompt asking for a sector count.
+        if pending is not None:
+            if re.search(table[pending][0], text, re.M):
+                continue
+            pending = None
+        hit = None
+        for i, row in enumerate(table):
+            pat = row[0]
+            if i in spent:
+                continue
+            if re.search(pat, text, re.M):
+                hit = i
+                break
+        if hit is None:
+            # Not every screen is a question.  The kernel probing devices, the
+            # boot loader loading, the sets going in - all of them sit there
+            # with nothing to answer, sometimes for minutes.  Only give up if
+            # nothing worth answering has appeared for a long time.
+            if time.time() - quiet_since > args.stall:
+                raise SystemExit(
+                    "nothing to answer for %d seconds:\n%s"
+                    % (args.stall, con.dump()))
+            continue
+        quiet_since = time.time()
+        name = table[hit][0]
+        if len(table[hit]) > 2 and table[hit][2]:
+            spent.add(hit)
+        seen[hit] = seen.get(hit, 0) + 1
+        if seen[hit] > 15:
+            raise SystemExit("stuck on %r:\n%s" % (name, con.dump()))
+        print("   [%2d] %s" % (step, name))
+        table[hit][1](text)
+        pending = hit
+        if state["done"]:
             break
     else:
-        raise SystemExit("the installer never finished; see the console log")
+        raise SystemExit("the installer never finished:\n" + con.dump())
 
+    print("== waiting for a shell")
+    for _ in range(60):
+        text = con.settled(quiet=1.0, limit=120)
+        if re.search(r"#\s*$", text, re.M):
+            break
+        con.line()
     print("== halting the guest")
-    inst.wait([br"#\s"], timeout=900, what="a shell prompt")
-    inst.line("halt -p")
+    con.line("halt -p")
     time.sleep(10)
-    inst.child.close(force=True)
+    con.child.close(force=True)
 
 
 def main():
@@ -250,6 +307,8 @@ def main():
     p.add_argument("--image", default=None)
     p.add_argument("--size", default="4G")
     p.add_argument("--memory", default="256")
+    p.add_argument("--stall", type=int, default=1200,
+                   help="give up after this many seconds with no question")
     p.add_argument("--minimal", action="store_true", default=True,
                    help="base and kernel sets only")
     p.add_argument("--full", dest="minimal", action="store_false")
