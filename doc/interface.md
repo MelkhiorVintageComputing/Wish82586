@@ -140,7 +140,42 @@ the `0xD5` start frame delimiter.  The FCS is appended least significant byte
 first.  Half duplex behaviour (deferral on CRS, backoff on COL) is driven from
 the CONFIGURE command parameters.
 
-`mdc` / `mdio_*` are brought out for PHY management but are not driven yet.
+## MDIO
+
+PHY management is a separate pair of blocks rather than part of the MAC,
+because it is not the MAC's business: the 82586 predates MDIO and none of the
+drivers in `doc/drivers` knows a PHY exists.  The MAC's own `mdc` / `mdio_*`
+pins are left undriven; these are what a system should wire to the PHY.
+
+`wb_mdio` is a Wishbone slave that runs the clause 22 serial bus.  Registers,
+byte offsets, so the word address is the offset over four:
+
+| offset | name     | contents                                                |
+|--------|----------|---------------------------------------------------------|
+| `0x00` | `CTRL`   | `[4:0]` register, `[12:8]` PHY, `[16]` read, `[24]` start |
+| `0x04` | `WDATA`  | data for a write                                          |
+| `0x08` | `RDATA`  | data from the last read                                   |
+| `0x0c` | `STATUS` | `[0]` busy, `[1]` the last read finished                  |
+| `0x10` | `DIV`    | MDC divider: MDC = clk / (2 * (DIV + 1))                  |
+| `0x14` | `ID`     | `0x4d444a4f`                                              |
+
+`mdio_prog` is a Wishbone master that drives those registers.  After reset it
+resets the PHY, waits for the reset bit to clear, advertises exactly the one
+ability it was parameterised for, restarts auto-negotiation and raises
+`ready_o`.  `SPEED` is 10, 100 or 1000 and `FULL_DUPLEX` picks the duplex.
+
+Speed is asked for by advertising it rather than by forcing it into BMCR.
+Forcing works at 10 and 100 but is not allowed for 1000BASE-T, which needs
+negotiation to settle master and slave, so advertising one ability is the
+approach that is right at every speed instead of two approaches.
+
+A PHY that never clears its reset bit is given up on after a bounded number of
+polls: `failed_o` says so and the sequence carries on.  Wedging the bring-up
+of a machine because its PHY is unhappy would be worse than finishing with a
+PHY that may not be configured.
+
+The RTL8211EG needs nothing beyond clause 22 for a GMII interface; see
+`doc/drivers/Linux/README.md` for why that is the answer rather than a guess.
 
 ## Software-visible behaviour
 

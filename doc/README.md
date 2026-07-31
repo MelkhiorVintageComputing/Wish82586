@@ -7,6 +7,8 @@ Content:
 * verification.md: how the testbench is built, how to run it and how to add
   tests
 * drivers: source files from existing drivers
+ - drivers/Linux: Linux's clause 22 definitions and Realtek PHY driver, the
+   reference for the MDIO side.  See drivers/Linux/README.md.
  - drivers/NetBSD: NetBSD's 82586 support, for both a little-endian ISA card
    and big-endian Suns.  This is the reference for the shared memory layout;
    see drivers/NetBSD/README.md for why.

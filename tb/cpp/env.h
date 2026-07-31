@@ -12,6 +12,7 @@
 
 #include "i82586.h"
 #include "ie_driver.h"
+#include "mdio_phy.h"
 #include "mii_phy.h"
 #include "sim.h"
 #include "wb.h"
@@ -60,6 +61,12 @@ class Env {
   WbHost& host() { return *host_; }
   MiiPhy& phy() { return *phy_; }
   ie::MemImage& img() { return *img_; }
+  // The MDIO station a test drives directly, and the PHY listening to it.
+  WbHost& mdio_host() { return *mdio_host_; }
+  MdioPhy& mdio_phy() { return *mdio_phy_; }
+  // The PHY on the far side of programmed pair i (0 gigabit full, 1 100
+  // full, 2 ten half).
+  MdioPhy& prog_phy(int i) { return *prog_phy_[i]; }
   IeDriver& drv() { return *drv_; }
   const EnvConfig& cfg() const { return cfg_; }
   const std::string& name() const { return name_; }
@@ -85,6 +92,9 @@ class Env {
   std::unique_ptr<MiiPhy> phy_;
   std::unique_ptr<ie::MemImage> img_;
   std::unique_ptr<IeDriver> drv_;
+  std::unique_ptr<WbHost> mdio_host_;
+  std::unique_ptr<MdioPhy> mdio_phy_;
+  std::unique_ptr<MdioPhy> prog_phy_[3];
 };
 
 }  // namespace wtb

@@ -71,6 +71,47 @@ module tb_top #(
     output logic [31:0] crc8_fcs,
     output logic        crc8_ok,
 
+
+    // ---- MDIO station, driven straight from the testbench -----------------
+    input  logic        mdio_wbs_cyc_i,
+    input  logic        mdio_wbs_stb_i,
+    input  logic        mdio_wbs_we_i,
+    input  logic [3:0]  mdio_wbs_sel_i,
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  logic [31:0] mdio_wbs_adr_i,   // only [5:0] reach the block
+    /* verilator lint_on UNUSEDSIGNAL */
+    input  logic [31:0] mdio_wbs_dat_i,
+    output logic [31:0] mdio_wbs_dat_o,
+    output logic        mdio_wbs_ack_o,
+    output logic        mdio_wbs_err_o,
+    output logic        mdio_mdc,
+    output logic        mdio_mdio_o,
+    output logic        mdio_mdio_oe,
+    input  logic        mdio_mdio_i,
+
+    // ---- programmed pair 0: 1000 Mb/s, full duplex ----
+    output logic        p0_mdc,
+    output logic        p0_mdio_o,
+    output logic        p0_mdio_oe,
+    input  logic        p0_mdio_i,
+    output logic        p0_ready,
+    output logic        p0_failed,
+
+    // ---- programmed pair 1: 100 Mb/s, full duplex ----
+    output logic        p1_mdc,
+    output logic        p1_mdio_o,
+    output logic        p1_mdio_oe,
+    input  logic        p1_mdio_i,
+    output logic        p1_ready,
+    output logic        p1_failed,
+
+    // ---- programmed pair 2: 10 Mb/s, half duplex ----
+    output logic        p2_mdc,
+    output logic        p2_mdio_o,
+    output logic        p2_mdio_oe,
+    input  logic        p2_mdio_i,
+    output logic        p2_ready,
+    output logic        p2_failed,
     // ---- unit test: MII receive front end ----------------------------------
     // Fed by the same pins the DUT sees, so it observes the same stimulus.
     output logic        rxfe_wr,
@@ -156,6 +197,152 @@ module tb_top #(
       .crc_o    (crc8_crc),
       .fcs_o    (crc8_fcs),
       .crc_ok_o (crc8_ok)
+  );
+
+
+  // The station on its own, so a test can drive its registers directly.
+  wb_mdio u_mdio (
+      .clk       (clk),
+      .rst       (rst),
+      .wbs_cyc_i (mdio_wbs_cyc_i),
+      .wbs_stb_i (mdio_wbs_stb_i),
+      .wbs_we_i  (mdio_wbs_we_i),
+      .wbs_sel_i (mdio_wbs_sel_i),
+      .wbs_adr_i (mdio_wbs_adr_i[5:0]),
+      .wbs_dat_i (mdio_wbs_dat_i),
+      .wbs_dat_o (mdio_wbs_dat_o),
+      .wbs_ack_o (mdio_wbs_ack_o),
+      .wbs_err_o (mdio_wbs_err_o),
+      .mdc       (mdio_mdc),
+      .mdio_o    (mdio_mdio_o),
+      .mdio_oe   (mdio_mdio_oe),
+      .mdio_i    (mdio_mdio_i)
+  );
+
+  // A programming block wired to its own station, the way a system would.
+  logic        p0_cyc, p0_stb, p0_we, p0_ack, p0_err;
+  logic [3:0]  p0_sel;
+  logic [5:0]  p0_adr;
+  logic [31:0] p0_wdat, p0_rdat;
+
+  mdio_prog #(.SPEED(1000), .FULL_DUPLEX(1'b1), .PHY_ADDR(1),
+              .RESET_WAIT(64), .RESET_POLLS(8)) u_prog0 (
+      .clk       (clk),
+      .rst       (rst),
+      .start_i   (1'b0),
+      .ready_o   (p0_ready),
+      .failed_o  (p0_failed),
+      .wbm_cyc_o (p0_cyc),
+      .wbm_stb_o (p0_stb),
+      .wbm_we_o  (p0_we),
+      .wbm_sel_o (p0_sel),
+      .wbm_adr_o (p0_adr),
+      .wbm_dat_o (p0_wdat),
+      .wbm_dat_i (p0_rdat),
+      .wbm_ack_i (p0_ack),
+      .wbm_err_i (p0_err)
+  );
+
+  wb_mdio u_mdio0 (
+      .clk       (clk),
+      .rst       (rst),
+      .wbs_cyc_i (p0_cyc),
+      .wbs_stb_i (p0_stb),
+      .wbs_we_i  (p0_we),
+      .wbs_sel_i (p0_sel),
+      .wbs_adr_i (p0_adr),
+      .wbs_dat_i (p0_wdat),
+      .wbs_dat_o (p0_rdat),
+      .wbs_ack_o (p0_ack),
+      .wbs_err_o (p0_err),
+      .mdc       (p0_mdc),
+      .mdio_o    (p0_mdio_o),
+      .mdio_oe   (p0_mdio_oe),
+      .mdio_i    (p0_mdio_i)
+  );
+
+  // A programming block wired to its own station, the way a system would.
+  logic        p1_cyc, p1_stb, p1_we, p1_ack, p1_err;
+  logic [3:0]  p1_sel;
+  logic [5:0]  p1_adr;
+  logic [31:0] p1_wdat, p1_rdat;
+
+  mdio_prog #(.SPEED(100), .FULL_DUPLEX(1'b1), .PHY_ADDR(1),
+              .RESET_WAIT(64), .RESET_POLLS(8)) u_prog1 (
+      .clk       (clk),
+      .rst       (rst),
+      .start_i   (1'b0),
+      .ready_o   (p1_ready),
+      .failed_o  (p1_failed),
+      .wbm_cyc_o (p1_cyc),
+      .wbm_stb_o (p1_stb),
+      .wbm_we_o  (p1_we),
+      .wbm_sel_o (p1_sel),
+      .wbm_adr_o (p1_adr),
+      .wbm_dat_o (p1_wdat),
+      .wbm_dat_i (p1_rdat),
+      .wbm_ack_i (p1_ack),
+      .wbm_err_i (p1_err)
+  );
+
+  wb_mdio u_mdio1 (
+      .clk       (clk),
+      .rst       (rst),
+      .wbs_cyc_i (p1_cyc),
+      .wbs_stb_i (p1_stb),
+      .wbs_we_i  (p1_we),
+      .wbs_sel_i (p1_sel),
+      .wbs_adr_i (p1_adr),
+      .wbs_dat_i (p1_wdat),
+      .wbs_dat_o (p1_rdat),
+      .wbs_ack_o (p1_ack),
+      .wbs_err_o (p1_err),
+      .mdc       (p1_mdc),
+      .mdio_o    (p1_mdio_o),
+      .mdio_oe   (p1_mdio_oe),
+      .mdio_i    (p1_mdio_i)
+  );
+
+  // A programming block wired to its own station, the way a system would.
+  logic        p2_cyc, p2_stb, p2_we, p2_ack, p2_err;
+  logic [3:0]  p2_sel;
+  logic [5:0]  p2_adr;
+  logic [31:0] p2_wdat, p2_rdat;
+
+  mdio_prog #(.SPEED(10), .FULL_DUPLEX(1'b0), .PHY_ADDR(1),
+              .RESET_WAIT(64), .RESET_POLLS(8)) u_prog2 (
+      .clk       (clk),
+      .rst       (rst),
+      .start_i   (1'b0),
+      .ready_o   (p2_ready),
+      .failed_o  (p2_failed),
+      .wbm_cyc_o (p2_cyc),
+      .wbm_stb_o (p2_stb),
+      .wbm_we_o  (p2_we),
+      .wbm_sel_o (p2_sel),
+      .wbm_adr_o (p2_adr),
+      .wbm_dat_o (p2_wdat),
+      .wbm_dat_i (p2_rdat),
+      .wbm_ack_i (p2_ack),
+      .wbm_err_i (p2_err)
+  );
+
+  wb_mdio u_mdio2 (
+      .clk       (clk),
+      .rst       (rst),
+      .wbs_cyc_i (p2_cyc),
+      .wbs_stb_i (p2_stb),
+      .wbs_we_i  (p2_we),
+      .wbs_sel_i (p2_sel),
+      .wbs_adr_i (p2_adr),
+      .wbs_dat_i (p2_wdat),
+      .wbs_dat_o (p2_rdat),
+      .wbs_ack_o (p2_ack),
+      .wbs_err_o (p2_err),
+      .mdc       (p2_mdc),
+      .mdio_o    (p2_mdio_o),
+      .mdio_oe   (p2_mdio_oe),
+      .mdio_i    (p2_mdio_i)
   );
 
   mii_rx #(.DATA_W(PHY_DATA_W)) u_rxfe (

@@ -80,6 +80,38 @@ void Env::bind_models() {
   pp.col = &d->dut_mii_col;
   phy_.reset(new MiiPhy(*sim_, pp, cfg_.speed));
 
+  // The MDIO station, driven straight from a test, and its PHY.
+  WbMasterPorts mp2;
+  mp2.cyc = &d->mdio_wbs_cyc_i;
+  mp2.stb = &d->mdio_wbs_stb_i;
+  mp2.we = &d->mdio_wbs_we_i;
+  mp2.sel = &d->mdio_wbs_sel_i;
+  mp2.adr = &d->mdio_wbs_adr_i;
+  mp2.dat_w = &d->mdio_wbs_dat_i;
+  mp2.dat_r = &d->mdio_wbs_dat_o;
+  mp2.ack = &d->mdio_wbs_ack_o;
+  mp2.err = &d->mdio_wbs_err_o;
+  mdio_host_.reset(new WbHost(*sim_, sysclk_, mp2));
+
+  MdioPorts dp;
+  dp.mdc = &d->mdio_mdc;
+  dp.mdio_o = &d->mdio_mdio_o;
+  dp.mdio_oe = &d->mdio_mdio_oe;
+  dp.mdio_i = &d->mdio_mdio_i;
+  mdio_phy_.reset(new MdioPhy(*sim_, sysclk_, dp, 1));
+
+  // The PHYs on the far side of the programming blocks.
+  MdioPorts pp0, pp1, pp2;
+  pp0.mdc = &d->p0_mdc; pp0.mdio_o = &d->p0_mdio_o;
+  pp0.mdio_oe = &d->p0_mdio_oe; pp0.mdio_i = &d->p0_mdio_i;
+  pp1.mdc = &d->p1_mdc; pp1.mdio_o = &d->p1_mdio_o;
+  pp1.mdio_oe = &d->p1_mdio_oe; pp1.mdio_i = &d->p1_mdio_i;
+  pp2.mdc = &d->p2_mdc; pp2.mdio_o = &d->p2_mdio_o;
+  pp2.mdio_oe = &d->p2_mdio_oe; pp2.mdio_i = &d->p2_mdio_i;
+  prog_phy_[0].reset(new MdioPhy(*sim_, sysclk_, pp0, 1));
+  prog_phy_[1].reset(new MdioPhy(*sim_, sysclk_, pp1, 1));
+  prog_phy_[2].reset(new MdioPhy(*sim_, sysclk_, pp2, 1));
+
   img_.reset(new ie::MemImage(*mem_, cfg_.cbbase, cfg_.scp_addr));
   drv_.reset(new IeDriver(*sim_, *host_, *img_));
 

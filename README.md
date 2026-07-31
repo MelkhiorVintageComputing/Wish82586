@@ -33,6 +33,8 @@ the two approximations noted below.
 | TDR and DIAGNOSE commands                 | done, tested               |
 | DUMP command                              | reports failure            |
 | GMII, transmit and receive                | done, tested               |
+| MDIO station (`wb_mdio`)                  | done, tested               |
+| PHY bring-up (`mdio_prog`)                | done, tested               |
 | word-wide DMA, both directions            | done, tested               |
 
 Everything the reference drivers do on a normal bring-up now works, and
