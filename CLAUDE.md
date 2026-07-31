@@ -85,9 +85,9 @@ port sharing), `crc32_eth` (Ethernet FCS, `DATA_W` 4 for MII or 8),
 
 `mii_rx` and `mii_tx` take a `DATA_W` of 4 (MII) or 8 (GMII) and are otherwise
 one datapath; `PHY_DATA_W` on the top selects it at elaboration, so a build is
-one interface or the other.  `TEST_UNLESS_GMII` marks the tests that do not
-pass on a GMII build yet - the receive DMA moves a byte per bus transaction
-and cannot keep up with gigabit, which is the next thing to fix.
+one interface or the other.  Both builds run the same tests; a
+couple are MII-only behind `#if PHY_DATA_W == 4`, because a byte-wide
+interface cannot end a frame part way through a byte.
 
 `mii_rx` and `mii_tx` run in the PHY's clock domains.  Receive crosses to the
 system clock through `async_fifo`; transmit does not stream at all - the
@@ -110,7 +110,13 @@ the pin rather than the model, since comparing the two sides of a converter
 proves nothing.
 
 Blocks reach memory through `wb_master`'s internal port: hold `req_i` with the
-address until `ack_o` pulses for one cycle.  `ie_core` drives it from a
+address until `ack_o` pulses for one cycle.  `size_i` picks a byte, a 16-bit
+field, or a whole word with the caller's own `sel_i` - the receive unit uses
+that last one to move frame data four bytes at a time, posting each word so
+the transaction overlaps the next four bytes arriving.  One byte per
+transaction was fine at 100 Mb/s and an order of magnitude too slow at
+gigabit; if you make the receive path serialise on the bus again, GMII is
+where it will show up.  `ie_core` drives it from a
 combinational request decode plus a sequential state machine - follow that
 shape for the units still to come, and note that `wb_master` refuses a new
 request during its own `ack_o` cycle so a state can safely hold `req_i` high

@@ -17,42 +17,46 @@ module wb_arb (
     // ---- port 0 (priority) --------------------------------------------------
     input  logic        p0_req_i,
     input  logic        p0_we_i,
-    input  logic        p0_byte_i,
+    input  logic [1:0]  p0_size_i,
+    input  logic [3:0]  p0_sel_i,
     input  logic [23:0] p0_addr_i,
-    input  logic [15:0] p0_wdata_i,
+    input  logic [31:0] p0_wdata_i,
     output logic        p0_ack_o,
     output logic        p0_err_o,
 
     // ---- port 1 -------------------------------------------------------------
     input  logic        p1_req_i,
     input  logic        p1_we_i,
-    input  logic        p1_byte_i,
+    input  logic [1:0]  p1_size_i,
+    input  logic [3:0]  p1_sel_i,
     input  logic [23:0] p1_addr_i,
-    input  logic [15:0] p1_wdata_i,
+    input  logic [31:0] p1_wdata_i,
     output logic        p1_ack_o,
     output logic        p1_err_o,
 
     // ---- port 2 -------------------------------------------------------------
     input  logic        p2_req_i,
     input  logic        p2_we_i,
-    input  logic        p2_byte_i,
+    input  logic [1:0]  p2_size_i,
+    input  logic [3:0]  p2_sel_i,
     input  logic [23:0] p2_addr_i,
-    input  logic [15:0] p2_wdata_i,
+    input  logic [31:0] p2_wdata_i,
     output logic        p2_ack_o,
     output logic        p2_err_o,
 
     // Read data is shared; each port latches it on its own ack.
-    output logic [15:0] rdata_o,
+    output logic [31:0] rdata_o,
 
     // ---- to wb_master -------------------------------------------------------
     output logic        req_o,
     output logic        we_o,
-    output logic        byte_o,
+    output logic [1:0]  size_o,
+    output logic [3:0]  sel_o,
     output logic [23:0] addr_o,
-    output logic [15:0] wdata_o,
+    output logic [31:0] wdata_o,
     input  logic        ack_i,
     input  logic        err_i,
-    input  logic [15:0] rdata_i
+    input  logic [31:0] rdata_i
 );
 
   logic       lock;   // a grant is in progress
@@ -82,21 +86,24 @@ module wb_arb (
       2'd0: begin
         req_o   = p0_req_i;
         we_o    = p0_we_i;
-        byte_o  = p0_byte_i;
+        size_o  = p0_size_i;
+        sel_o   = p0_sel_i;
         addr_o  = p0_addr_i;
         wdata_o = p0_wdata_i;
       end
       2'd1: begin
         req_o   = p1_req_i;
         we_o    = p1_we_i;
-        byte_o  = p1_byte_i;
+        size_o  = p1_size_i;
+        sel_o   = p1_sel_i;
         addr_o  = p1_addr_i;
         wdata_o = p1_wdata_i;
       end
       default: begin
         req_o   = p2_req_i;
         we_o    = p2_we_i;
-        byte_o  = p2_byte_i;
+        size_o  = p2_size_i;
+        sel_o   = p2_sel_i;
         addr_o  = p2_addr_i;
         wdata_o = p2_wdata_i;
       end

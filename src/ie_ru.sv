@@ -62,13 +62,18 @@ module ie_ru (
     // ---- memory port -------------------------------------------------------
     output logic        bus_req_o,
     output logic        bus_we_o,
-    output logic        bus_byte_o,
+    output logic [1:0]  bus_size_o,
+    output logic [3:0]  bus_sel_o,
     output logic [23:0] bus_addr_o,
-    output logic [15:0] bus_wdata_o,
+    output logic [31:0] bus_wdata_o,
     input  logic        bus_ack_i,
-    input  logic [15:0] bus_rdata_i,
+    input  logic [31:0] bus_rdata_i,
     input  logic        bus_err_i
 );
+
+  // Read data comes back a full word wide; these blocks all want the
+  // 16-bit field that was addressed.
+  wire [15:0] rdata = bus_rdata_i[15:0];
 
   // Descriptor field offsets, see doc/drivers/NetBSD/i82586reg.h.
   localparam logic [23:0] RFD_STATUS = 24'd0;
@@ -95,7 +100,7 @@ module ie_ru (
     RU_RD_SIZE,
     RU_READY,          // armed, waiting for a frame
     RU_POP,
-    RU_WRITE,
+    RU_FLUSH,          // push the part filled word out before moving on
     RU_CLOSE_FULL,     // this buffer is full, close it and move on
     RU_RD_NEXT_RBD,
     RU_DROP,           // swallow the rest of a frame we are not keeping
@@ -116,12 +121,35 @@ module ie_ru (
   logic        rbd_el;
   logic [13:0] buf_off;
   logic [15:0] frame_len;
-  logic [7:0]  rx_byte;
   logic [47:0] dst;               // destination address as it arrives
   logic        suspended;
   logic        suspend_pending;
   logic        in_frame;       // a frame is being written, not just armed
   logic        count_then_file; // the counter bump is on the way to filing
+
+  // Frame data goes to memory a word at a time.  Bytes land in their own lane
+  // of an accumulator and the word is posted as soon as the last lane fills,
+  // so the bus transaction overlaps the next four bytes coming out of the
+  // FIFO.  One byte per transaction is fine at 100 Mb/s and nowhere near fast
+  // enough at gigabit; this is what makes the difference.
+  logic [31:0] acc;
+  logic [3:0]  acc_sel;
+  logic [23:0] acc_addr;         // word aligned address the accumulator is for
+
+  // The posted write: at most one is in flight, and the state machine waits
+  // for it to drain before using the port for anything else.
+  logic        wp_valid;
+  logic [1:0]  wp_size;
+  logic [3:0]  wp_sel;
+  logic [23:0] wp_addr;
+  logic [31:0] wp_data;
+  logic        flush_to_end;     // where to go once the accumulator is empty
+
+  wire [23:0] byte_addr = buf_addr + {10'h0, buf_off};
+  wire [1:0]  lane      = byte_addr[1:0];
+  wire        last_lane = (lane == 2'd3);
+  // Anything held that has not been posted yet.
+  wire        acc_dirty = (acc_sel != 4'h0);
 
   // Where this frame started, so a rejected frame can be rewound.
   logic [15:0] rbd_frame;
@@ -175,14 +203,19 @@ module ie_ru (
   always_comb begin
     mc_hit = 1'b0;
     for (int i = 0; i < MC_SLOTS; i++)
-      if ((4'(i) < mc_n) && (dst == mc[i])) mc_hit = 1'b1;
+      if ((4'(i) < mc_n) && (dst_next == mc[i])) mc_hit = 1'b1;
   end
 
-  wire is_broadcast = (dst == 48'hffff_ffff_ffff);
-  wire is_multicast = dst[0];              // group bit of the first octet
-  wire is_ours      = (dst == ia_addr_i);
-  wire accept = promisc_i || is_ours || (is_broadcast && !no_bcast_i) ||
-                (is_multicast && !is_broadcast && (mc_all_i || mc_hit));
+  // The decision is made on the cycle the sixth byte arrives, so it has to
+  // include that byte rather than the register that is about to hold it.
+  wire [47:0] dst_next = (frame_len < 16'd6)
+                       ? (dst | (48'(word_data) << {frame_len[2:0], 3'b000}))
+                       : dst;
+  wire is_broadcast = (dst_next == 48'hffff_ffff_ffff);
+  wire is_multicast = dst_next[0];         // group bit of the first octet
+  wire is_ours      = (dst_next == ia_addr_i);
+  wire accept_next = promisc_i || is_ours || (is_broadcast && !no_bcast_i) ||
+                     (is_multicast && !is_broadcast && (mc_all_i || mc_hit));
 
   wire frame_is_short = ({8'h00, min_frame_len_i} > (frame_len + 16'd4));
 
@@ -202,9 +235,19 @@ module ie_ru (
   always_comb begin
     bus_req_o   = 1'b0;
     bus_we_o    = 1'b0;
-    bus_byte_o  = 1'b0;
+    bus_size_o  = wish82586_pkg::BUS_SZ_HALF;
+    bus_sel_o   = 4'h0;
     bus_addr_o  = 24'h0;
-    bus_wdata_o = 16'h0;
+    bus_wdata_o = 32'h0;
+    if (wp_valid) begin
+      // A posted frame data write always goes first; the states below wait.
+      bus_req_o   = 1'b1;
+      bus_we_o    = 1'b1;
+      bus_size_o  = wp_size;
+      bus_sel_o   = wp_sel;
+      bus_addr_o  = wp_addr;
+      bus_wdata_o = wp_data;
+    end else
     case (state)
       RU_RD_RFD_RBD: begin
         bus_req_o  = 1'b1;
@@ -222,19 +265,11 @@ module ie_ru (
         bus_req_o  = 1'b1;
         bus_addr_o = rbd_addr + RBD_SIZE;
       end
-      RU_WRITE: begin
-        bus_req_o   = 1'b1;
-        bus_we_o    = 1'b1;
-        bus_byte_o  = 1'b1;
-        bus_addr_o  = hdr_phase ? (rfd_addr + 24'd8 + {8'h00, frame_len})
-                                : (buf_addr + {10'h0, buf_off});
-        bus_wdata_o = {8'h00, rx_byte};
-      end
       RU_CLOSE_FULL: begin
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = rbd_addr + RBD_COUNT;
-        bus_wdata_o = {2'b01, buf_size};            // F set, not end of frame
+        bus_wdata_o = {16'h0, 2'b01, buf_size};            // F set, not end of frame
       end
       RU_RD_NEXT_RBD: begin
         bus_req_o  = 1'b1;
@@ -244,13 +279,13 @@ module ie_ru (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = rbd_addr + RBD_COUNT;
-        bus_wdata_o = {2'b11, buf_off};             // F and EOF
+        bus_wdata_o = {16'h0, 2'b11, buf_off};             // F and EOF
       end
       RU_FIN_WR_RFD_RBD: begin
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = rfd_addr + RFD_RBD;
-        bus_wdata_o = rbd_frame;
+        bus_wdata_o = {16'h0, rbd_frame};
       end
       RU_FIN_RD_CMD: begin
         bus_req_o  = 1'b1;
@@ -260,7 +295,7 @@ module ie_ru (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = rfd_addr + RFD_STATUS;
-        bus_wdata_o = rfd_status;
+        bus_wdata_o = {16'h0, rfd_status};
       end
       RU_FIN_RD_LINK: begin
         bus_req_o  = 1'b1;
@@ -270,15 +305,17 @@ module ie_ru (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = err_addr;
-        bus_wdata_o = err_value;
+        bus_wdata_o = {16'h0, err_value};
       end
       default: ;
     endcase
   end
 
-  // Pop a word only when we are ready to deal with it.
-  assign rx_rd_o = ((state == RU_POP) || (state == RU_DROP) ||
-                    (state == RU_READY)) && !rx_empty_i;
+  // A word is taken from the FIFO exactly when it is dealt with, never
+  // speculatively: the read enable and the state machine use the same term.
+  wire pop_stall = wp_valid && (last_lane || hdr_phase);
+  wire pop_now   = (state == RU_POP) && !rx_empty_i && !pop_stall;
+  assign rx_rd_o = pop_now || ((state == RU_DROP) && !rx_empty_i);
 
   always_comb begin
     if (state == RU_NO_RESOURCE)                        rus_o = 3'd2;  // no resource
@@ -318,12 +355,20 @@ module ie_ru (
       rbd_el          <= 1'b0;
       buf_off         <= 14'h0;
       frame_len       <= 16'h0;
-      rx_byte         <= 8'h0;
       dst             <= 48'h0;
       suspended       <= 1'b0;
       suspend_pending <= 1'b0;
       in_frame        <= 1'b0;
       count_then_file <= 1'b0;
+      acc             <= 32'h0;
+      acc_sel         <= 4'h0;
+      acc_addr        <= 24'h0;
+      wp_valid        <= 1'b0;
+      wp_size         <= wish82586_pkg::BUS_SZ_WORD;
+      wp_sel          <= 4'h0;
+      wp_addr         <= 24'h0;
+      wp_data         <= 32'h0;
+      flush_to_end    <= 1'b0;
       rbd_frame       <= NULL_PTR;
       buf_frame       <= 24'h0;
       size_frame      <= 14'h0;
@@ -342,6 +387,8 @@ module ie_ru (
     end else begin
       ev_fr_o  <= 1'b0;
       ev_rnr_o <= 1'b0;
+
+      if (wp_valid && bus_ack_i) wp_valid <= 1'b0;
 
       if (suspend_i) suspend_pending <= 1'b1;
       if (abort_i) begin
@@ -365,30 +412,30 @@ module ie_ru (
           // ---- arm on a descriptor ------------------------------------------
           RU_RD_RFD_RBD:
             if (bus_ack_i) begin
-              if (bus_rdata_i == NULL_PTR) begin
+              if (rdata == NULL_PTR) begin
                 state <= RU_NO_RESOURCE;
               end else begin
-                rbd   <= bus_rdata_i;
+                rbd   <= rdata;
                 state <= RU_RD_BUF_LO;
               end
             end
 
           RU_RD_BUF_LO:
             if (bus_ack_i) begin
-              buf_addr[15:0] <= bus_rdata_i;
+              buf_addr[15:0] <= rdata;
               state          <= RU_RD_BUF_HI;
             end
 
           RU_RD_BUF_HI:
             if (bus_ack_i) begin
-              buf_addr[23:16] <= bus_rdata_i[7:0];
+              buf_addr[23:16] <= rdata[7:0];
               state           <= RU_RD_SIZE;
             end
 
           RU_RD_SIZE:
             if (bus_ack_i) begin
-              buf_size <= bus_rdata_i[13:0];
-              rbd_el   <= bus_rdata_i[15];
+              buf_size <= rdata[13:0];
+              rbd_el   <= rdata[15];
               buf_off  <= 14'h0;
               // Mid frame this is the next buffer of a frame still arriving,
               // so carry on taking bytes rather than waiting for a new one.
@@ -396,9 +443,14 @@ module ie_ru (
             end
 
           // ---- waiting for a frame ------------------------------------------
+          // Arriving data starts a frame; the byte itself is taken in RU_POP.
           RU_READY:
             if (!rx_empty_i) begin
               // Remember where this frame starts so it can be rewound.
+              // Every frame starts with an empty accumulator, whatever
+              // happened to the last one.
+              acc         <= 32'h0;
+              acc_sel     <= 4'h0;
               rbd_frame   <= rbd;
               buf_frame   <= buf_addr;
               size_frame  <= buf_size;
@@ -412,48 +464,79 @@ module ie_ru (
               err_dribble <= 1'b0;
               err_overrun <= 1'b0;
               err_short   <= 1'b0;
-              if (word_end) begin
-                in_frame <= 1'b0;
-                state <= RU_READY;            // an empty frame, nothing to do
-              end else begin
-                rx_byte <= word_data;
-                dst[7:0] <= word_data;
-                state   <= RU_WRITE;
-              end
+              state <= RU_POP;
             end
 
+          // Take a byte, put it where it belongs, and post a word whenever
+          // one fills.  Nothing here waits on the bus unless the previous
+          // post has not drained yet, which is what keeps up with the wire.
           RU_POP:
-            if (!rx_empty_i) begin
+            if (pop_now) begin
               if (word_end) begin
                 err_bad     <= word_err[2];
                 err_dribble <= word_err[1];
                 err_overrun <= word_err[0];
                 err_short   <= frame_is_short;
                 in_frame    <= 1'b0;
-                state       <= RU_FIN_CLOSE_RBD;
+                flush_to_end <= 1'b1;
+                state       <= RU_FLUSH;
               end else begin
-                rx_byte <= word_data;
                 if (frame_len < 16'd6) dst[{frame_len[2:0], 3'b000} +: 8] <= word_data;
-                state <= RU_WRITE;
+                frame_len <= frame_len + 16'd1;
+
+                if (frame_len == 16'd5 && !accept_next) begin
+                  // Not for us.  Drop what has been gathered so far as well,
+                  // or it would be flushed into the next frame's buffer.
+                  rejected <= 1'b1;
+                  acc      <= 32'h0;
+                  acc_sel  <= 4'h0;
+                  state    <= RU_DROP;
+                end else if (hdr_phase) begin
+                  // AL-LOC = 0: the header goes into the descriptor, one byte
+                  // at a time, and takes no buffer space.
+                  wp_valid <= 1'b1;
+                  wp_size  <= wish82586_pkg::BUS_SZ_BYTE;
+                  wp_sel   <= 4'h0;
+                  wp_addr  <= rfd_addr + 24'd8 + {8'h00, frame_len};
+                  wp_data  <= {24'h0, word_data};
+                end else begin
+                  if (!acc_dirty) acc_addr <= {byte_addr[23:2], 2'b00};
+                  acc[{lane, 3'b000} +: 8] <= word_data;
+                  acc_sel[lane]            <= 1'b1;
+                  buf_off                  <= buf_off + 14'd1;
+
+                  if (last_lane) begin
+                    // The word is complete: post it and start a fresh one.
+                    wp_valid <= 1'b1;
+                    wp_size  <= wish82586_pkg::BUS_SZ_WORD;
+                    wp_sel   <= acc_sel | (4'h1 << lane);
+                    wp_addr  <= acc_dirty ? acc_addr : {byte_addr[23:2], 2'b00};
+                    wp_data  <= acc | (32'(word_data) << {lane, 3'b000});
+                    acc_sel  <= 4'h0;
+                    acc      <= 32'h0;
+                  end
+
+                  if (buf_off + 14'd1 >= buf_size) begin
+                    flush_to_end <= 1'b0;
+                    state        <= RU_FLUSH;
+                  end
+                end
               end
             end
 
-          RU_WRITE:
-            if (bus_ack_i) begin
-              frame_len <= frame_len + 16'd1;
-              // The destination address is complete after six bytes, which is
-              // the earliest the frame can be turned away.
-              if (frame_len == 16'd5 && !accept) begin
-                rejected <= 1'b1;
-                state    <= RU_DROP;
-              end else if (hdr_phase) begin
-                // Header bytes go to the descriptor and take no buffer space.
-                state <= RU_POP;
-              end else if (buf_off + 14'd1 >= buf_size) begin
-                state <= RU_CLOSE_FULL;
+          // Push out whatever is left in the accumulator, then carry on.
+          RU_FLUSH:
+            if (!wp_valid) begin
+              if (acc_dirty) begin
+                wp_valid <= 1'b1;
+                wp_size  <= wish82586_pkg::BUS_SZ_WORD;
+                wp_sel   <= acc_sel;
+                wp_addr  <= acc_addr;
+                wp_data  <= acc;
+                acc_sel  <= 4'h0;
+                acc      <= 32'h0;
               end else begin
-                buf_off <= buf_off + 14'd1;
-                state   <= RU_POP;
+                state <= flush_to_end ? RU_FIN_CLOSE_RBD : RU_CLOSE_FULL;
               end
             end
 
@@ -470,7 +553,7 @@ module ie_ru (
 
           RU_RD_NEXT_RBD:
             if (bus_ack_i) begin
-              rbd     <= bus_rdata_i;
+              rbd     <= rdata;
               buf_off <= 14'h0;
               state   <= RU_RD_BUF_LO;
             end
@@ -520,7 +603,7 @@ module ie_ru (
 
           RU_FIN_RD_CMD:
             if (bus_ack_i) begin
-              el_frame <= bus_rdata_i[15];          // reuse: EL of this RFD
+              el_frame <= rdata[15];          // reuse: EL of this RFD
               state    <= RU_FIN_WR_STATUS;
             end
 
@@ -532,7 +615,7 @@ module ie_ru (
 
           RU_FIN_RD_LINK:
             if (bus_ack_i) begin
-              rfd <= bus_rdata_i;
+              rfd <= rdata;
               if (el_frame) begin
                 // That was the last descriptor the host gave us.
                 ev_rnr_o <= 1'b1;
@@ -577,7 +660,7 @@ module ie_ru (
   end
 
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, bus_err_i};
+  wire _unused = &{1'b0, bus_rdata_i[31:16], bus_err_i};
   // verilator lint_on UNUSED
 
 endmodule

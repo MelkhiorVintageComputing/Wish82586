@@ -60,13 +60,18 @@ module ie_core (
     // ---- memory port (see wb_master) --------------------------------------
     output logic        bus_req_o,
     output logic        bus_we_o,
-    output logic        bus_byte_o,
+    output logic [1:0]  bus_size_o,
+    output logic [3:0]  bus_sel_o,
     output logic [23:0] bus_addr_o,
-    output logic [15:0] bus_wdata_o,
+    output logic [31:0] bus_wdata_o,
     input  logic        bus_ack_i,
-    input  logic [15:0] bus_rdata_i,
+    input  logic [31:0] bus_rdata_i,
     input  logic        bus_err_i
 );
+
+  // Read data comes back a full word wide; these blocks all want the
+  // 16-bit field that was addressed.
+  wire [15:0] rdata = bus_rdata_i[15:0];
 
   // ---- shared memory layout, byte offsets ---------------------------------
   localparam logic [23:0] SCP_ISCP_LO = 24'd6;   // 24-bit ISCP address
@@ -112,8 +117,8 @@ module ie_core (
   logic [15:0] status_pub;   // the status word the host can currently see
 
   wire [23:0] scb_addr = cbbase_o + {8'h00, scb_off};
-  wire [2:0]  cuc      = bus_rdata_i[10:8];   // valid while the command is read
-  wire [2:0]  ruc      = bus_rdata_i[6:4];
+  wire [2:0]  cuc      = rdata[10:8];   // valid while the command is read
+  wire [2:0]  ruc      = rdata[6:4];
 
   // Status word as the host will read it, for a given set of flags.
   // {CX, FR, CNA, RNR} at [15:12], CUS at [10:8], RUS at [6:4].
@@ -126,8 +131,8 @@ module ie_core (
   // in the same cycle as its acknowledgement must not be lost.
   wire       taking_cmd = (state == S_SCB_RD_CMD) && bus_ack_i;
   wire       init_done  = (state == S_ISCP_CLR_BUSY) && bus_ack_i;
-  wire       ack_apply  = taking_cmd && !bus_rdata_i[SCB_CMD_RESET_BIT];
-  wire [3:0] ack_mask   = bus_rdata_i[15:12];
+  wire       ack_apply  = taking_cmd && !rdata[SCB_CMD_RESET_BIT];
+  wire [3:0] ack_mask   = rdata[15:12];
 
   logic [3:0] flags_next;
   always_comb begin
@@ -155,7 +160,7 @@ module ie_core (
       flags      <= 4'h0;
       status_pub <= 16'h0;
     end else begin
-      flags <= (taking_cmd && bus_rdata_i[SCB_CMD_RESET_BIT]) ? 4'h0 : flags_next;
+      flags <= (taking_cmd && rdata[SCB_CMD_RESET_BIT]) ? 4'h0 : flags_next;
       if (status_written) status_pub <= status_tx;
     end
   end
@@ -164,13 +169,14 @@ module ie_core (
   always_comb begin
     bus_req_o   = 1'b0;
     bus_we_o    = 1'b0;
-    bus_byte_o  = 1'b0;
+    bus_size_o  = wish82586_pkg::BUS_SZ_HALF;
+    bus_sel_o   = 4'h0;
     bus_addr_o  = 24'h0;
-    bus_wdata_o = 16'h0;
+    bus_wdata_o = 32'h0;
     case (state)
       S_SCP_SYSBUS: begin
         bus_req_o  = 1'b1;
-        bus_byte_o = 1'b1;
+        bus_size_o = wish82586_pkg::BUS_SZ_BYTE;
         bus_addr_o = scp_addr_i[23:0];
       end
       S_SCP_ISCP_LO: begin
@@ -196,9 +202,9 @@ module ie_core (
       S_ISCP_CLR_BUSY: begin
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
-        bus_byte_o  = 1'b1;
+        bus_size_o  = wish82586_pkg::BUS_SZ_BYTE;
         bus_addr_o  = iscp_addr + ISCP_BUSY;
-        bus_wdata_o = 16'h0000;
+        bus_wdata_o = 32'h0;
       end
       S_SCB_RD_CMD: begin
         bus_req_o  = 1'b1;
@@ -216,13 +222,13 @@ module ie_core (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = scb_addr + SCB_CMD;
-        bus_wdata_o = 16'h0000;
+        bus_wdata_o = 32'h0;
       end
       S_SCB_WR_STATUS, S_WR_STATUS: begin
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = scb_addr + SCB_STATUS;
-        bus_wdata_o = status_tx;
+        bus_wdata_o = {16'h0, status_tx};
       end
       default: ;
     endcase
@@ -270,37 +276,37 @@ module ie_core (
 
         S_SCP_SYSBUS:
           if (bus_ack_i) begin
-            bus16 <= ~bus_rdata_i[0];   // 0 => 16-bit bus, 1 => 8-bit bus
+            bus16 <= ~rdata[0];   // 0 => 16-bit bus, 1 => 8-bit bus
             state <= S_SCP_ISCP_LO;
           end
 
         S_SCP_ISCP_LO:
           if (bus_ack_i) begin
-            iscp_addr[15:0] <= bus_rdata_i;
+            iscp_addr[15:0] <= rdata;
             state           <= S_SCP_ISCP_HI;
           end
 
         S_SCP_ISCP_HI:
           if (bus_ack_i) begin
-            iscp_addr[23:16] <= bus_rdata_i[7:0];
+            iscp_addr[23:16] <= rdata[7:0];
             state            <= S_ISCP_SCB;
           end
 
         S_ISCP_SCB:
           if (bus_ack_i) begin
-            scb_off <= bus_rdata_i;
+            scb_off <= rdata;
             state   <= S_ISCP_CB_LO;
           end
 
         S_ISCP_CB_LO:
           if (bus_ack_i) begin
-            cbbase_o[15:0] <= bus_rdata_i;
+            cbbase_o[15:0] <= rdata;
             state          <= S_ISCP_CB_HI;
           end
 
         S_ISCP_CB_HI:
           if (bus_ack_i) begin
-            cbbase_o[23:16] <= bus_rdata_i[7:0];
+            cbbase_o[23:16] <= rdata[7:0];
             state           <= S_ISCP_CLR_BUSY;
           end
 
@@ -323,9 +329,9 @@ module ie_core (
 
         S_SCB_RD_CMD:
           if (bus_ack_i) begin
-            scb_cmd   <= bus_rdata_i;
+            scb_cmd   <= rdata;
             status_tx <= mk_status(flags_next);
-            if (bus_rdata_i[SCB_CMD_RESET_BIT]) begin
+            if (rdata[SCB_CMD_RESET_BIT]) begin
               // Software reset: behave as if RESET had been pulled.  Clear the
               // command word first so the host sees the command taken.
               state <= S_SCB_CLR_CMD;
@@ -352,7 +358,7 @@ module ie_core (
 
         S_SCB_RD_CBL:
           if (bus_ack_i) begin
-            cu_cbl_o   <= bus_rdata_i;
+            cu_cbl_o   <= rdata;
             cu_start_o <= 1'b1;
             state      <= (scb_cmd[6:4] == wish82586_pkg::RUC_START) ?
                           S_SCB_RD_RFA : S_SCB_WR_STATUS;
@@ -360,7 +366,7 @@ module ie_core (
 
         S_SCB_RD_RFA:
           if (bus_ack_i) begin
-            ru_rfa_o   <= bus_rdata_i;
+            ru_rfa_o   <= rdata;
             ru_start_o <= 1'b1;
             state      <= S_SCB_WR_STATUS;
           end
@@ -389,7 +395,7 @@ module ie_core (
   assign int_o  = |status_pub[15:12];
 
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, bus_err_i, bus16, scb_cmd[14:0], scp_addr_i[31:24]};
+  wire _unused = &{1'b0, bus_rdata_i[31:16], bus_err_i, bus16, scb_cmd[14:0], scp_addr_i[31:24]};
   // verilator lint_on UNUSED
 
 endmodule

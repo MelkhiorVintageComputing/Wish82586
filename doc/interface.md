@@ -91,23 +91,36 @@ core still takes `mii_tx_clk` as an input: feed it from the fabric's 125 MHz
 and drive the PHY's GTX_CLK from the same place.  Half duplex, carrier
 extension and frame bursting are not implemented; gigabit is full duplex here.
 
-### Receive rate at gigabit
+### Keeping up with the wire
 
-The receive unit writes one byte per Wishbone transaction, which takes about
-eighty nanoseconds at 50 MHz.  That is comfortable at 100 Mb/s, where a byte
-arrives every eighty nanoseconds - a full length frame arrives with no
-overrun - but at gigabit a byte arrives every eight, and no FIFO depth fixes a
-sustained deficit.  So a GMII build receives nothing useful yet: the frames
-are reported as overruns.
+Frame data moves between memory and the MAC a word at a time.  Bytes land in
+their own lane of an accumulator in the receive unit and the word is posted as
+soon as the last lane fills, so the bus transaction overlaps the next four
+bytes coming out of the FIFO.  Partial words - an unaligned buffer start, or
+the tail of a frame - go out as one transaction with the byte lanes that were
+actually filled, so it is always one transaction per word of buffer touched.
 
-Transmit does not have the problem, because the command unit stages the whole
-frame before the transmitter starts, so the memory side has no real time
-constraint at all.
+What that costs, per byte of frame:
 
-Moving the memory side to whole words is the fix, and it is the next piece of
-work.  The receive tests are marked pending in a GMII build with that reason,
-so `make test PHY=gmii` says so on every run rather than the limitation
-sitting in a document nobody reads.
+| interface  | byte arrives every | bus clock needed          |
+|------------|--------------------|---------------------------|
+| MII 10     | 800 ns             | anything                  |
+| MII 100    | 80 ns              | 50 MHz is comfortable     |
+| GMII       | 8 ns               | 125 MHz, with no headroom |
+
+At gigabit the accumulator has to take a byte every clock and the posted write
+has to complete in four, which is exactly what a 125 MHz Wishbone gives.  The
+`sys_period_ps` in the testbench environment follows that.
+
+The receive FIFO is 256 entries.  That is not about the sustained rate, which
+the word-wide path settles: it is to ride out the pause while the receive unit
+closes one buffer and fetches the next descriptor.  With small buffers at
+gigabit those pauses are what decide whether a frame survives.
+
+Transmit never had the problem: the command unit stages a whole frame before
+the transmitter starts, so the memory side has no real time constraint.  It
+still reads host memory a byte at a time, which is four times more bus traffic
+than it needs but costs only staging latency.
 
 Standard MII, PHY-sourced clocks:
 

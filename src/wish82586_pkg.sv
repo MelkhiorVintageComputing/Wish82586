@@ -173,6 +173,12 @@ package wish82586_pkg;
 
   localparam logic [15:0] NULL_PTR = 16'hffff;
 
+  // How much a memory port access moves.  BUS_SZ_WORD carries the caller's own
+  // byte lanes, which is how frame data goes in and out four bytes at a time.
+  localparam logic [1:0] BUS_SZ_BYTE = 2'd0;
+  localparam logic [1:0] BUS_SZ_HALF = 2'd1;
+  localparam logic [1:0] BUS_SZ_WORD = 2'd2;
+
   // -------------------------------------------------------------------------
   // CSR (Wishbone slave) register map - byte offsets
   // -------------------------------------------------------------------------

@@ -11,8 +11,7 @@ It can be used to support Ethernet on recreated vintage computers in a modern FP
 The chip works end to end: it comes up, runs command lists, receives frames
 into the host's descriptor rings and transmits from them, with deferral,
 padding, FCS, collision retry and internal loopback.  What is left is
-gigabit receive, which needs the memory side to move whole words, and the
-two approximations noted below.
+the two approximations noted below.
 
 | block                                     | state                      |
 |-------------------------------------------|----------------------------|
@@ -33,14 +32,16 @@ two approximations noted below.
 | AL-LOC = 0, both directions               | done, tested               |
 | TDR and DIAGNOSE commands                 | done, tested               |
 | DUMP command                              | reports failure            |
-| GMII datapath and transmit                | done, tested               |
-| GMII receive                              | needs word-wide DMA        |
+| GMII, transmit and receive                | done, tested               |
+| word-wide DMA on the receive path         | done, tested               |
 
 Everything the reference drivers do on a normal bring-up now works, and
-`sys_netbsd_style_bring_up` walks that sequence end to end.  Two things are
-deliberate approximations, both marked TODO in the RTL: the collision backoff
-uses an LFSR rather than true truncated binary exponential backoff, and the
-command unit stages transmit frames a byte per bus cycle on a 32-bit bus.
+`sys_netbsd_style_bring_up` walks that sequence end to end.  Both interfaces work at line rate; gigabit wants the Wishbone clock at
+125 MHz, which `doc/interface.md` works through.  Two things are deliberate
+approximations, both marked TODO in the RTL: the collision backoff uses an
+LFSR rather than true truncated binary exponential backoff, and the command
+unit still reads transmit data a byte per bus cycle, which costs staging
+latency but nothing else.
 
 Tests for work not yet done are written up front and marked pending, so the
 pending count is the todo list; it is currently empty.

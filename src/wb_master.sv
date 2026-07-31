@@ -5,7 +5,13 @@
 // The MAC sees memory the way the 82586 does: a 24-bit byte address space
 // holding little-endian 8- and 16-bit fields.  This block turns one such
 // access at a time into a bus cycle on the 32-bit Wishbone port, picking the
-// byte lanes and shifting the data into and out of the right half of the word.
+// byte lanes and shifting the data into and out of the right part of the word.
+//
+// size_i says how much is being moved: a byte, a 16-bit field, or a whole
+// 32-bit word with the caller's own byte lanes in sel_i.  That last one is how
+// the receive unit gets frame data into memory four bytes at a time - one
+// transaction per word touched, whatever the alignment - which is what it
+// takes to keep up with the wire.
 //
 // Wishbone is word addressed: ADR_O carries the index of a 32-bit word, not a
 // byte address, and which bytes of that word are meant is said entirely by
@@ -28,11 +34,12 @@ module wb_master #(
     // ---- internal port ----------------------------------------------------
     input  logic                   req_i,
     input  logic                   we_i,
-    input  logic                   byte_i,     // 1 = 8-bit access, 0 = 16-bit
+    input  logic [1:0]             size_i,     // see SZ_BYTE / SZ_HALF / SZ_WORD
+    input  logic [3:0]             sel_i,      // byte lanes, SZ_WORD only
     input  logic [23:0]            addr_i,
-    input  logic [15:0]            wdata_i,
+    input  logic [31:0]            wdata_i,
     output logic                   ack_o,
-    output logic [15:0]            rdata_o,
+    output logic [31:0]            rdata_o,
     output logic                   err_o,
 
     // ---- Wishbone B4 classic master --------------------------------------
@@ -47,6 +54,10 @@ module wb_master #(
     input  logic                   wbm_err_i
 );
 
+  localparam logic [1:0] SZ_BYTE = wish82586_pkg::BUS_SZ_BYTE;
+  localparam logic [1:0] SZ_HALF = wish82586_pkg::BUS_SZ_HALF;
+  localparam logic [1:0] SZ_WORD = wish82586_pkg::BUS_SZ_WORD;
+
   initial begin
     if (WB_DATA_W != 32)
       $fatal(1, "wb_master: the master port is 32 bits wide; put a width adapter in the fabric");
@@ -59,25 +70,36 @@ module wb_master #(
   logic [31:0] dat_next;
 
   always_comb begin
-    if (byte_i) begin
-      sel_next = 4'b0001 << addr_i[1:0];
-      dat_next = {4{wdata_i[7:0]}};
-    end else begin
-      sel_next = addr_i[1] ? 4'b1100 : 4'b0011;
-      dat_next = {2{wdata_i}};
-    end
+    case (size_i)
+      SZ_BYTE: begin
+        sel_next = 4'b0001 << addr_i[1:0];
+        dat_next = {4{wdata_i[7:0]}};
+      end
+      SZ_WORD: begin
+        sel_next = sel_i;
+        dat_next = wdata_i;
+      end
+      default: begin
+        sel_next = addr_i[1] ? 4'b1100 : 4'b0011;
+        dat_next = {2{wdata_i[15:0]}};
+      end
+    endcase
   end
 
   typedef enum logic [0:0] { ST_IDLE, ST_ACTIVE } state_e;
   state_e      state;
   logic [1:0]  lsb_q;
-  logic        byte_q;
+  logic [1:0]  size_q;
 
   // Extract the addressed field from the word the slave returned.
-  logic [15:0] rdata_next;
+  logic [31:0] rdata_next;
   always_comb begin
-    if (byte_q) rdata_next = {8'h00, wbm_dat_i[8*lsb_q +: 8]};
-    else        rdata_next = lsb_q[1] ? wbm_dat_i[31:16] : wbm_dat_i[15:0];
+    case (size_q)
+      SZ_BYTE: rdata_next = {24'h0, wbm_dat_i[8*lsb_q +: 8]};
+      SZ_WORD: rdata_next = wbm_dat_i;
+      default: rdata_next = lsb_q[1] ? {16'h0, wbm_dat_i[31:16]}
+                                     : {16'h0, wbm_dat_i[15:0]};
+    endcase
   end
 
   always_ff @(posedge clk) begin
@@ -93,7 +115,7 @@ module wb_master #(
       err_o     <= 1'b0;
       rdata_o   <= '0;
       lsb_q     <= 2'b00;
-      byte_q    <= 1'b0;
+      size_q    <= SZ_HALF;
     end else begin
       ack_o <= 1'b0;
       err_o <= 1'b0;
@@ -109,7 +131,7 @@ module wb_master #(
             wbm_cyc_o <= 1'b1;
             wbm_stb_o <= 1'b1;
             lsb_q     <= addr_i[1:0];
-            byte_q    <= byte_i;
+            size_q    <= size_i;
             state     <= ST_ACTIVE;
           end
         end

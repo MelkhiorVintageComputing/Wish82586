@@ -29,7 +29,9 @@ namespace wtb {
 #endif
 
 struct EnvConfig {
-  u64 sys_period_ps = 20 * NS;         // 50 MHz system clock
+  // 50 MHz is plenty for MII.  Gigabit needs a byte moved every eight
+  // nanoseconds, so the bus has to run at 125 MHz to have any chance.
+  u64 sys_period_ps = (PHY_DATA_W == 8) ? 8 * NS : 20 * NS;
   size_t mem_size = 1u << 20;          // 1 MiB of shared memory at address 0
   uint32_t mem_base = 0;
   uint32_t cbbase = 0x0000'2000;       // control blocks live here

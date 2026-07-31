@@ -107,21 +107,29 @@ module wish82586 #(
   // arbiter in front of wb_master once more than one block wants the bus.
   // ---------------------------------------------------------------------------
   // Memory port, shared by the SCB handler and the command unit.
-  logic        bus_req, bus_we, bus_byte, bus_ack, bus_err;
+  logic        bus_req, bus_we, bus_ack, bus_err;
+  logic [1:0]  bus_size;
+  logic [3:0]  bus_sel;
   logic [23:0] bus_addr;
-  logic [15:0] bus_wdata, bus_rdata, bus_rdata_raw;
+  logic [31:0] bus_wdata, bus_rdata, bus_rdata_raw;
 
-  logic        scb_req, scb_we, scb_byte, scb_ack, scb_err;
+  logic        scb_req, scb_we, scb_ack, scb_err;
+  logic [1:0]  scb_size;
+  logic [3:0]  scb_sel;
   logic [23:0] scb_addr;
-  logic [15:0] scb_wdata;
+  logic [31:0] scb_wdata;
 
-  logic        cu_req, cu_we, cu_byte, cu_ack, cu_err;
+  logic        cu_req, cu_we, cu_ack, cu_err;
+  logic [1:0]  cu_size;
+  logic [3:0]  cu_sel;
   logic [23:0] cu_addr;
-  logic [15:0] cu_wdata;
+  logic [31:0] cu_wdata;
 
-  logic        ru_req, ru_we, ru_byte, ru_ack, ru_err;
+  logic        ru_req, ru_we, ru_ack, ru_err;
+  logic [1:0]  ru_size;
+  logic [3:0]  ru_sel;
   logic [23:0] ru_addr;
-  logic [15:0] ru_wdata;
+  logic [31:0] ru_wdata;
 
   // Receive unit control and the receive FIFO between the two clock domains.
   logic [23:0] scb_base;      // absolute address of the SCB
@@ -197,7 +205,8 @@ module wish82586 #(
       .ev_rnr_i     (ev_rnr),
       .bus_req_o    (scb_req),
       .bus_we_o     (scb_we),
-      .bus_byte_o   (scb_byte),
+      .bus_size_o   (scb_size),
+      .bus_sel_o    (scb_sel),
       .bus_addr_o   (scb_addr),
       .bus_wdata_o  (scb_wdata),
       .bus_ack_i    (scb_ack),
@@ -241,7 +250,8 @@ module wish82586 #(
       .mc_all_o      (mc_all),
       .bus_req_o    (cu_req),
       .bus_we_o     (cu_we),
-      .bus_byte_o   (cu_byte),
+      .bus_size_o   (cu_size),
+      .bus_sel_o    (cu_sel),
       .bus_addr_o   (cu_addr),
       .bus_wdata_o  (cu_wdata),
       .bus_ack_i    (cu_ack),
@@ -264,7 +274,11 @@ module wish82586 #(
       .byte_count_o (rx_bytes)
   );
 
-  async_fifo #(.WIDTH(12), .DEPTH(64)) u_rx_fifo (
+  // Deep enough to ride out the descriptor work between buffers.  Word-wide
+  // DMA fixed the sustained rate; what is left is the pause while the next
+  // buffer descriptor is fetched, and depth is the right tool for that.  At
+  // gigabit with small buffers those pauses are what decide it.
+  async_fifo #(.WIDTH(12), .DEPTH(256)) u_rx_fifo (
       .wclk    (mii_rx_clk),
       .wrst    (rst),
       .wr_en   (rxf_wr),
@@ -327,7 +341,8 @@ module wish82586 #(
       .rx_rd_o         (ru_src_rd),
       .bus_req_o       (ru_req),
       .bus_we_o        (ru_we),
-      .bus_byte_o      (ru_byte),
+      .bus_size_o      (ru_size),
+      .bus_sel_o       (ru_sel),
       .bus_addr_o      (ru_addr),
       .bus_wdata_o     (ru_wdata),
       .bus_ack_i       (ru_ack),
@@ -340,21 +355,24 @@ module wish82586 #(
       .rst        (rst),
       .p0_req_i   (scb_req),
       .p0_we_i    (scb_we),
-      .p0_byte_i  (scb_byte),
+      .p0_size_i  (scb_size),
+      .p0_sel_i   (scb_sel),
       .p0_addr_i  (scb_addr),
       .p0_wdata_i (scb_wdata),
       .p0_ack_o   (scb_ack),
       .p0_err_o   (scb_err),
       .p1_req_i   (ru_req),
       .p1_we_i    (ru_we),
-      .p1_byte_i  (ru_byte),
+      .p1_size_i  (ru_size),
+      .p1_sel_i   (ru_sel),
       .p1_addr_i  (ru_addr),
       .p1_wdata_i (ru_wdata),
       .p1_ack_o   (ru_ack),
       .p1_err_o   (ru_err),
       .p2_req_i   (cu_req),
       .p2_we_i    (cu_we),
-      .p2_byte_i  (cu_byte),
+      .p2_size_i  (cu_size),
+      .p2_sel_i   (cu_sel),
       .p2_addr_i  (cu_addr),
       .p2_wdata_i (cu_wdata),
       .p2_ack_o   (cu_ack),
@@ -362,7 +380,8 @@ module wish82586 #(
       .rdata_o    (bus_rdata),
       .req_o      (bus_req),
       .we_o       (bus_we),
-      .byte_o     (bus_byte),
+      .size_o     (bus_size),
+      .sel_o      (bus_sel),
       .addr_o     (bus_addr),
       .wdata_o    (bus_wdata),
       .ack_i      (bus_ack),
@@ -378,7 +397,8 @@ module wish82586 #(
       .rst       (rst),
       .req_i     (bus_req),
       .we_i      (bus_we),
-      .byte_i    (bus_byte),
+      .size_i    (bus_size),
+      .sel_i     (bus_sel),
       .addr_i    (bus_addr),
       .wdata_i   (bus_wdata),
       .ack_o     (bus_ack),

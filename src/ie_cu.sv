@@ -87,11 +87,12 @@ module ie_cu (
     // ---- memory port -------------------------------------------------------
     output logic        bus_req_o,
     output logic        bus_we_o,
-    output logic        bus_byte_o,
+    output logic [1:0]  bus_size_o,
+    output logic [3:0]  bus_sel_o,
     output logic [23:0] bus_addr_o,
-    output logic [15:0] bus_wdata_o,
+    output logic [31:0] bus_wdata_o,
     input  logic        bus_ack_i,
-    input  logic [15:0] bus_rdata_i,
+    input  logic [31:0] bus_rdata_i,
     input  logic        bus_err_i
 );
 
@@ -151,7 +152,7 @@ module ie_cu (
   logic [15:0] mc_off;         // byte offset of the address being read
   logic [3:0]  mc_left;        // addresses still to fetch
 
-  wire [15:0] mc_bytes = bus_rdata_i;   // valid while the count is being read
+  wire [15:0] mc_bytes = rdata;   // valid while the count is being read
   wire [3:0]  mc_n = (mc_bytes >= 16'd48) ? 4'd8 :
                      (mc_bytes >= 16'd42) ? 4'd7 :
                      (mc_bytes >= 16'd36) ? 4'd6 :
@@ -166,18 +167,23 @@ module ie_cu (
 
   // Words of CONFIGURE parameters to fetch, from the byte count in byte 0.
   // The part accepts 4 to 12 bytes; anything else is clamped.
-  wire [3:0] cfg_count = bus_rdata_i[3:0];
+  wire [3:0] cfg_count = rdata[3:0];
   wire [2:0] cfg_words_next = (cfg_count < 4'd2)   ? 3'd1 :
                               (cfg_count >= 4'd12) ? 3'd6 :
                               (cfg_count[3:1] + {2'b00, cfg_count[0]});
+
+  // Read data comes back a full word wide; these blocks all want the
+  // 16-bit field that was addressed.
+  wire [15:0] rdata = bus_rdata_i[15:0];
 
   // ---- request presented to the memory port -------------------------------
   always_comb begin
     bus_req_o   = 1'b0;
     bus_we_o    = 1'b0;
-    bus_byte_o  = 1'b0;
+    bus_size_o  = wish82586_pkg::BUS_SZ_HALF;
+    bus_sel_o   = 4'h0;
     bus_addr_o  = 24'h0;
-    bus_wdata_o = 16'h0;
+    bus_wdata_o = 32'h0;
     case (state)
       CU_FETCH_CMD: begin
         bus_req_o  = 1'b1;
@@ -191,7 +197,7 @@ module ie_cu (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = cb_addr;
-        bus_wdata_o = CB_ST_BUSY;
+        bus_wdata_o = {16'h0, CB_ST_BUSY};
       end
       CU_IA, CU_CFG: begin
         bus_req_o  = 1'b1;
@@ -203,12 +209,12 @@ module ie_cu (
       end
       CU_TX_HDR_DST: begin
         bus_req_o  = !(lb_enable_i && lb_full_i);
-        bus_byte_o = 1'b1;
+        bus_size_o = wish82586_pkg::BUS_SZ_BYTE;
         bus_addr_o = cb_addr + 24'd8 + {21'h0, idx};
       end
       CU_TX_HDR_LEN: begin
         bus_req_o  = !(lb_enable_i && lb_full_i);
-        bus_byte_o = 1'b1;
+        bus_size_o = wish82586_pkg::BUS_SZ_BYTE;
         bus_addr_o = cb_addr + 24'd14 + {21'h0, idx};
       end
       CU_TX_RD_CNT: begin
@@ -225,7 +231,7 @@ module ie_cu (
       end
       CU_TX_RD_BYTE: begin
         bus_req_o  = !(lb_enable_i && lb_full_i);
-        bus_byte_o = 1'b1;
+        bus_size_o = wish82586_pkg::BUS_SZ_BYTE;
         bus_addr_o = tbd_buf + {10'h0, tbd_off};
       end
       CU_TX_NEXT_TBD: begin
@@ -240,7 +246,7 @@ module ie_cu (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = cb_addr + 24'd6;
-        bus_wdata_o = 16'h8000;      // link OK: no open, no short, no problem
+        bus_wdata_o = 32'h8000;      // link OK: no open, no short, no problem
       end
       CU_MC_RD_ADDR: begin
         bus_req_o  = 1'b1;
@@ -250,7 +256,7 @@ module ie_cu (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_addr_o  = cb_addr;
-        bus_wdata_o = CB_ST_DONE | (ok ? CB_ST_OK : 16'h0) | tx_status;
+        bus_wdata_o = {16'h0, CB_ST_DONE | (ok ? CB_ST_OK : 16'h0) | tx_status};
       end
       default: ;
     endcase
@@ -328,13 +334,13 @@ module ie_cu (
 
         CU_FETCH_CMD:
           if (bus_ack_i) begin
-            cmd   <= bus_rdata_i;
+            cmd   <= rdata;
             state <= CU_FETCH_LINK;
           end
 
         CU_FETCH_LINK:
           if (bus_ack_i) begin
-            link  <= bus_rdata_i;
+            link  <= rdata;
             state <= CU_WR_BUSY;
           end
 
@@ -367,14 +373,14 @@ module ie_cu (
 
         CU_IA:
           if (bus_ack_i) begin
-            ia_addr_o[{idx[1:0], 4'h0} +: 16] <= bus_rdata_i;
+            ia_addr_o[{idx[1:0], 4'h0} +: 16] <= rdata;
             if (idx == 3'd2) state <= CU_FINISH;
             else             idx   <= idx + 3'd1;
           end
 
         CU_CFG:
           if (bus_ack_i) begin
-            cfg_bytes_o[{idx, 4'h0} +: 16] <= bus_rdata_i;
+            cfg_bytes_o[{idx, 4'h0} +: 16] <= rdata;
             if (idx == 3'd0) begin
               // Byte 0 of the parameters says how many bytes to configure, so
               // how many more words there are to fetch only becomes known once
@@ -396,17 +402,17 @@ module ie_cu (
         CU_MC_RD_CNT:
           if (bus_ack_i) begin
             mc_clear_o <= 1'b1;
-            mc_all_o   <= (bus_rdata_i > 16'd48);
+            mc_all_o   <= (rdata > 16'd48);
             mc_left    <= mc_n;
             mc_off     <= 16'd8;
             idx        <= 3'd0;
-            if (bus_rdata_i < 16'd6) state <= CU_FINISH;
+            if (rdata < 16'd6) state <= CU_FINISH;
             else                     state <= CU_MC_RD_ADDR;
           end
 
         CU_MC_RD_ADDR:
           if (bus_ack_i) begin
-            mc_addr_o[{idx[1:0], 4'h0} +: 16] <= bus_rdata_i;
+            mc_addr_o[{idx[1:0], 4'h0} +: 16] <= rdata;
             if (idx == 3'd2) begin
               mc_wr_o <= 1'b1;
               idx     <= 3'd0;
@@ -424,11 +430,11 @@ module ie_cu (
           if (bus_ack_i) begin
             tx_ram_we_o   <= 1'b1;
             tx_ram_addr_o <= tx_bytes[10:0];
-            tx_ram_data_o <= bus_rdata_i[7:0];
+            tx_ram_data_o <= rdata[7:0];
             tx_bytes      <= tx_bytes + 16'd1;
             if (lb_enable_i) begin
               lb_wr_o   <= 1'b1;
-              lb_data_o <= {4'h0, bus_rdata_i[7:0]};
+              lb_data_o <= {4'h0, rdata[7:0]};
             end
             if (idx == 3'd5) begin
               idx   <= 3'd0;
@@ -461,11 +467,11 @@ module ie_cu (
           if (bus_ack_i) begin
             tx_ram_we_o   <= 1'b1;
             tx_ram_addr_o <= tx_bytes[10:0];
-            tx_ram_data_o <= bus_rdata_i[7:0];
+            tx_ram_data_o <= rdata[7:0];
             tx_bytes      <= tx_bytes + 16'd1;
             if (lb_enable_i) begin
               lb_wr_o   <= 1'b1;
-              lb_data_o <= {4'h0, bus_rdata_i[7:0]};
+              lb_data_o <= {4'h0, rdata[7:0]};
             end
             if (idx == 3'd1) begin
               idx   <= 3'd0;
@@ -477,8 +483,8 @@ module ie_cu (
 
         CU_TX_RD_TBD:
           if (bus_ack_i) begin
-            tbd <= bus_rdata_i;
-            if (bus_rdata_i == 16'hffff) begin
+            tbd <= rdata;
+            if (rdata == 16'hffff) begin
               // Nothing to send; report it rather than transmitting rubbish.
               ok    <= 1'b0;
               state <= CU_FINISH;
@@ -489,21 +495,21 @@ module ie_cu (
 
         CU_TX_RD_CNT:
           if (bus_ack_i) begin
-            tbd_count <= bus_rdata_i[13:0];
-            tbd_eof   <= bus_rdata_i[15];
+            tbd_count <= rdata[13:0];
+            tbd_eof   <= rdata[15];
             tbd_off   <= 14'h0;
             state     <= CU_TX_RD_BUF_LO;
           end
 
         CU_TX_RD_BUF_LO:
           if (bus_ack_i) begin
-            tbd_buf[15:0] <= bus_rdata_i;
+            tbd_buf[15:0] <= rdata;
             state         <= CU_TX_RD_BUF_HI;
           end
 
         CU_TX_RD_BUF_HI:
           if (bus_ack_i) begin
-            tbd_buf[23:16] <= bus_rdata_i[7:0];
+            tbd_buf[23:16] <= rdata[7:0];
             state          <= (tbd_count == 14'h0) ?
                               (tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD) : CU_TX_RD_BYTE;
           end
@@ -513,11 +519,11 @@ module ie_cu (
             // TODO: a byte a cycle is simple but slow; the bus is 32 bits wide.
             tx_ram_we_o   <= 1'b1;
             tx_ram_addr_o <= tx_bytes[10:0];
-            tx_ram_data_o <= bus_rdata_i[7:0];
+            tx_ram_data_o <= rdata[7:0];
             tx_bytes      <= tx_bytes + 16'd1;
             if (lb_enable_i) begin
               lb_wr_o   <= 1'b1;
-              lb_data_o <= {4'h0, bus_rdata_i[7:0]};
+              lb_data_o <= {4'h0, rdata[7:0]};
             end
             if (tbd_off + 14'd1 >= tbd_count) begin
               state <= tbd_eof ? CU_TX_GO : CU_TX_NEXT_TBD;
@@ -528,8 +534,8 @@ module ie_cu (
 
         CU_TX_NEXT_TBD:
           if (bus_ack_i) begin
-            tbd <= bus_rdata_i;
-            if (bus_rdata_i == 16'hffff) state <= CU_TX_GO;
+            tbd <= rdata;
+            if (rdata == 16'hffff) state <= CU_TX_GO;
             else                         state <= CU_TX_RD_CNT;
           end
 
@@ -611,7 +617,7 @@ module ie_cu (
   end
 
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, bus_err_i, cmd[12:3]};
+  wire _unused = &{1'b0, bus_rdata_i[31:16], bus_err_i, cmd[12:3]};
   // verilator lint_on UNUSED
 
 endmodule
