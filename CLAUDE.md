@@ -29,9 +29,9 @@ change anything in `wish82586_pkg.sv` or `i82586.h`, that test is what stops
 the testbench and the RTL from quietly agreeing with each other and with
 nothing else.
 
-Receive, transmit, loopback, address filtering and error reporting all work.
-What is left is the AL-LOC = 0 transmit form and the diagnostic commands -
-each has a pending test describing it.  Work proceeds test first: pick a
+Receive, transmit, loopback, address filtering, error reporting and both
+AL-LOC forms all work.  What is left is the diagnostic commands, which have a
+pending test describing them.  Work proceeds test first: pick a
 pending test, implement the RTL, drop the marker.
 
 ## Commands

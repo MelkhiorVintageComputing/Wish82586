@@ -111,6 +111,24 @@ The chip is driven entirely through shared memory, exactly as the drivers in
    attention to make the chip look at the SCB command word, and acknowledge
    bits to clear status.
 
+### The AL-LOC bit
+
+CONFIGURE bit 3 of byte 3 decides where a frame's MAC header lives, and it
+applies both ways round.
+
+* **AL-LOC = 1** - what both reference drivers configure.  The whole frame,
+  header included, is in the transmit buffer and lands in the receive buffer.
+* **AL-LOC = 0**.  On transmit the destination address and the type or length
+  field come from the command block at offsets 8 and 14, and the source
+  address is inserted from the last IA-SETUP.  On receive the first fourteen
+  bytes go into the descriptor - destination, source and type land contiguously
+  from offset 8 - and the buffers hold only what follows.
+
+Neither driver in `doc/drivers` uses AL-LOC = 0, so the byte order of the
+command block's type field is taken to be wire order, most significant byte at
+offset 14.  Nothing in the tree confirms that; it is the assumption to check
+first if a real driver ever disagrees.
+
 ### Multicast filtering
 
 MC-SETUP hands the chip a list of addresses.  Wish82586 holds eight of them

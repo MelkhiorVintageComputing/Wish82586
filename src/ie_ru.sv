@@ -7,10 +7,12 @@
 // descriptors, and a separate list of buffer descriptors that the frames are
 // poured into one after another.
 //
-// The chip is configured AL-LOC = 1, the way both the Sun ROM and the NetBSD
-// drivers configure it, so the whole frame including its MAC header goes into
-// the buffers and the address fields in the descriptor are left alone.  The
-// FCS has already been stripped by the front end.
+// With AL-LOC = 1 - the way both the Sun ROM and the NetBSD drivers configure
+// it - the whole frame including its MAC header goes into the buffers and the
+// address fields of the descriptor are left alone.  With AL-LOC = 0 the first
+// fourteen bytes go into the descriptor instead, where they land contiguously
+// at offset 8 as destination, source and type, and the buffers hold only what
+// follows.  The FCS has already been stripped by the front end.
 //
 // A frame that fails the address filter, has a bad FCS or is too short is not
 // handed to the host: the descriptor and buffers it was being written into are
@@ -41,6 +43,7 @@ module ie_ru (
     input  logic [47:0] ia_addr_i,      // first octet in [7:0]
     input  logic        promisc_i,
     input  logic        no_bcast_i,
+    input  logic        addr_in_buffer_i,   // CONFIGURE AL-LOC
 
     // ---- multicast list, loaded by the MC-SETUP command --------------------
     input  logic        mc_clear_i,
@@ -142,6 +145,12 @@ module ie_ru (
   wire [2:0] word_err  = rx_data_i[10:8];
   wire [7:0] word_data = rx_data_i[7:0];
 
+  // With AL-LOC = 0 the header is written into the descriptor rather than the
+  // buffer.  Destination, source and type sit one after another from offset 8,
+  // so the byte index doubles as the offset.
+  localparam int HDR_BYTES = 14;
+  wire hdr_phase = !addr_in_buffer_i && (frame_len < 16'(HDR_BYTES));
+
   // ---- address filter ------------------------------------------------------
   // The multicast list is held exactly, up to MC_SLOTS entries.  A driver that
   // asks for more than that gets every multicast frame instead of a silently
@@ -217,7 +226,8 @@ module ie_ru (
         bus_req_o   = 1'b1;
         bus_we_o    = 1'b1;
         bus_byte_o  = 1'b1;
-        bus_addr_o  = buf_addr + {10'h0, buf_off};
+        bus_addr_o  = hdr_phase ? (rfd_addr + 24'd8 + {8'h00, frame_len})
+                                : (buf_addr + {10'h0, buf_off});
         bus_wdata_o = {8'h00, rx_byte};
       end
       RU_CLOSE_FULL: begin
@@ -436,6 +446,9 @@ module ie_ru (
               if (frame_len == 16'd5 && !accept) begin
                 rejected <= 1'b1;
                 state    <= RU_DROP;
+              end else if (hdr_phase) begin
+                // Header bytes go to the descriptor and take no buffer space.
+                state <= RU_POP;
               end else if (buf_off + 14'd1 >= buf_size) begin
                 state <= RU_CLOSE_FULL;
               end else begin

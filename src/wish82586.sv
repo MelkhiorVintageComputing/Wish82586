@@ -311,6 +311,7 @@ module wish82586 #(
       .ia_addr_i       (ia_addr),
       .promisc_i       (cfg_bytes[64]),
       .no_bcast_i      (cfg_bytes[65]),
+      .addr_in_buffer_i(cfg_bytes[27]),
       .mc_clear_i      (mc_clear),
       .mc_wr_i         (mc_wr),
       .mc_addr_i       (mc_addr),

@@ -476,9 +476,7 @@ TEST(sys_receive_good_frame_reports_no_errors) {
   CHECK_EQ(env.img().scb_ovrn_errs(), uint16_t(0));
 }
 
-TEST_PENDING(sys_transmit_with_header_in_the_command_block,
-             "AL-LOC = 0, where the destination and type come from the command "
-             "block and the source address from IA-SETUP, is not implemented") {
+TEST(sys_transmit_with_header_in_the_command_block) {
   CHECK_DRV(env.drv().init());
   CHECK_DRV(env.drv().ia_setup(env.local_mac()));
   ie::Config cfg;
@@ -592,6 +590,58 @@ TEST(sys_multicast_overflow_takes_everything) {
   std::vector<ie::RxFrame> rx = env.img().collect_rx();
   CHECK_EQ(rx.size(), size_t(1));
   CHECK_EQ(rx[0].dst, late.dst);
+}
+
+
+TEST(sys_receive_with_header_in_the_descriptor) {
+  // AL-LOC = 0 on the way in: the first fourteen bytes go into the descriptor
+  // and the buffers hold only what follows.
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.addr_in_buffer = false;
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  EthFrame f(env.local_mac(), env.peer_mac(), 0x0806, random_payload(120, 60));
+  env.phy().inject(f);
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx(false);
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK(rx[0].ok());
+  CHECK_EQ(rx[0].dst, f.dst);
+  CHECK_EQ(rx[0].src, f.src);
+  CHECK_EQ(rx[0].type_len, f.type_len);
+  // The buffer holds the payload alone, with no header in front of it.
+  CHECK_EQ(rx[0].raw, f.payload);
+}
+
+TEST(sys_alloc0_round_trip_through_loopback) {
+  // Transmit builds the header from the command block, receive takes it apart
+  // again into the descriptor; the frame has to survive both.
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.addr_in_buffer = false;
+  cfg.int_loopback = true;
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  EthFrame f(env.local_mac(), env.local_mac(), 0x1234, random_payload(64, 61));
+  const uint16_t cb = env.img().add_transmit(f, false);
+  CHECK_DRV(env.drv().run_cb(cb));
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx(false);
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_EQ(rx[0].dst, f.dst);
+  CHECK_EQ(rx[0].src, f.src);
+  CHECK_EQ(rx[0].type_len, f.type_len);
+  CHECK_EQ(rx[0].raw, f.payload);
+  CHECK_MSG(env.phy().tx_count() == 0, "a looped back frame reached the wire");
 }
 
 }  // namespace wtb

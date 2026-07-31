@@ -18,7 +18,14 @@
 // TRANSMIT copies the buffer chain into the staging RAM a byte at a time and
 // then hands it to mii_tx, which owns deferral, padding, the FCS and the retry
 // loop.  Staging the whole frame first is what lets a collision be retried
-// without going back to host memory.
+// without going back to host memory, and it is also what makes AL-LOC = 0
+// cost nothing extra: the header is simply staged ahead of the payload, so
+// the transmitter never has to know which mode it is in.
+//
+// With AL-LOC = 1 - what both reference drivers configure - the buffer holds
+// the whole frame.  With AL-LOC = 0 the destination address and the type or
+// length field come from the command block and the source address from the
+// last IA-SETUP, and the buffer holds only what follows them.
 
 module ie_cu (
     input  logic        clk,
@@ -104,6 +111,9 @@ module ie_cu (
     CU_TX_LB_END,
     CU_MC_RD_CNT,
     CU_MC_RD_ADDR,
+    CU_TX_HDR_DST,
+    CU_TX_HDR_SRC,
+    CU_TX_HDR_LEN,
     CU_FINISH,
     CU_NEXT
   } state_e;
@@ -183,6 +193,16 @@ module ie_cu (
       CU_TX_RD_TBD: begin
         bus_req_o  = 1'b1;
         bus_addr_o = cb_addr + 24'd6;
+      end
+      CU_TX_HDR_DST: begin
+        bus_req_o  = !(lb_enable_i && lb_full_i);
+        bus_byte_o = 1'b1;
+        bus_addr_o = cb_addr + 24'd8 + {21'h0, idx};
+      end
+      CU_TX_HDR_LEN: begin
+        bus_req_o  = !(lb_enable_i && lb_full_i);
+        bus_byte_o = 1'b1;
+        bus_addr_o = cb_addr + 24'd14 + {21'h0, idx};
       end
       CU_TX_RD_CNT: begin
         bus_req_o  = 1'b1;
@@ -315,7 +335,12 @@ module ie_cu (
               wish82586_pkg::CMD_IA_SETUP:  state <= CU_IA;
               wish82586_pkg::CMD_CONFIGURE: state <= CU_CFG;
               wish82586_pkg::CMD_MC_SETUP:  state <= CU_MC_RD_CNT;
-              wish82586_pkg::CMD_TRANSMIT: state <= CU_TX_RD_TBD;
+              wish82586_pkg::CMD_TRANSMIT: begin
+                tx_bytes <= 16'h0;
+                // AL-LOC is bit 3 of CONFIGURE byte 3: set means the whole
+                // frame is in the buffer, clear means the header is here.
+                state <= cfg_bytes_o[27] ? CU_TX_RD_TBD : CU_TX_HDR_DST;
+              end
               // TODO: TDR, DUMP and DIAGNOSE.
               default: begin
                 ok    <= 1'b0;
@@ -378,10 +403,65 @@ module ie_cu (
           end
 
         // ---- transmit ------------------------------------------------------
+        // ---- AL-LOC = 0: stage the header before the payload ---------------
+        CU_TX_HDR_DST:
+          if (bus_ack_i) begin
+            tx_ram_we_o   <= 1'b1;
+            tx_ram_addr_o <= tx_bytes[10:0];
+            tx_ram_data_o <= bus_rdata_i[7:0];
+            tx_bytes      <= tx_bytes + 16'd1;
+            if (lb_enable_i) begin
+              lb_wr_o   <= 1'b1;
+              lb_data_o <= {4'h0, bus_rdata_i[7:0]};
+            end
+            if (idx == 3'd5) begin
+              idx   <= 3'd0;
+              state <= CU_TX_HDR_SRC;
+            end else begin
+              idx <= idx + 3'd1;
+            end
+          end
+
+        // The source address is ours, so it needs no reading.
+        CU_TX_HDR_SRC:
+          if (!(lb_enable_i && lb_full_i)) begin
+            tx_ram_we_o   <= 1'b1;
+            tx_ram_addr_o <= tx_bytes[10:0];
+            tx_ram_data_o <= ia_addr_o[{idx, 3'b000} +: 8];
+            tx_bytes      <= tx_bytes + 16'd1;
+            if (lb_enable_i) begin
+              lb_wr_o   <= 1'b1;
+              lb_data_o <= {4'h0, ia_addr_o[{idx, 3'b000} +: 8]};
+            end
+            if (idx == 3'd5) begin
+              idx   <= 3'd0;
+              state <= CU_TX_HDR_LEN;
+            end else begin
+              idx <= idx + 3'd1;
+            end
+          end
+
+        CU_TX_HDR_LEN:
+          if (bus_ack_i) begin
+            tx_ram_we_o   <= 1'b1;
+            tx_ram_addr_o <= tx_bytes[10:0];
+            tx_ram_data_o <= bus_rdata_i[7:0];
+            tx_bytes      <= tx_bytes + 16'd1;
+            if (lb_enable_i) begin
+              lb_wr_o   <= 1'b1;
+              lb_data_o <= {4'h0, bus_rdata_i[7:0]};
+            end
+            if (idx == 3'd1) begin
+              idx   <= 3'd0;
+              state <= CU_TX_RD_TBD;
+            end else begin
+              idx <= idx + 3'd1;
+            end
+          end
+
         CU_TX_RD_TBD:
           if (bus_ack_i) begin
-            tbd      <= bus_rdata_i;
-            tx_bytes <= 16'h0;
+            tbd <= bus_rdata_i;
             if (bus_rdata_i == 16'hffff) begin
               // Nothing to send; report it rather than transmitting rubbish.
               ok    <= 1'b0;
