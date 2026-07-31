@@ -108,6 +108,41 @@ its own - see the note at the top of `cosim/scripts/`.
    the baseline that everything later is compared against.
 2. Add the StarLAN 10 device model to QEMU, backed by a plain software 82586
    so the driver can be brought up before the RTL is in the loop.
+
+   There is no shell-only version of this that gets an attach.  `ai_match()`
+   reads the board type, and then `ai_find_mem_size()` tries 64K, 48K, 32K and
+   16K windows, calling `i82586_proberam()` on each, and that function is the
+   real gate:
+
+   ```c
+   write16(SCP + 2, IE_SYSBUS_16BIT);   /* bus use byte      */
+   write16(ISCP + 0, 1);                /* set the busy flag */
+   hwreset();                           /* write to I/O + 0  */
+   chan_attn();                         /* write to I/O + 1  */
+   delay(100);
+   result = read16(ISCP + 0) == 0;      /* must have cleared */
+   ```
+
+   So the device has to walk the pointer chain and clear the ISCP busy flag on
+   channel attention before NetBSD will believe there is a chip there at all -
+   which is the same sequence `src/ie_core.sv` already implements, read from
+   the other side.
+
+   What the model needs:
+
+   * an ISA device with 16 bytes of I/O, a memory window and an IRQ;
+   * `I/O + 6` reading back with the board type in the low nibble - 1 for
+     StarLAN 10, which `ai_names[]` indexes as `SL_BOARD(val) - 1` - and the
+     revision in the high nibble;
+   * `I/O + 7` reading back the attribute bits from `if_aireg.h`;
+   * a write to `I/O + 0` resetting the chip, a write to `I/O + 1` being
+     channel attention;
+   * enough 82586 to do the initialisation handshake, then the SCB command
+     loop, then transmit and receive.
+
+   Delivered as a patch against the QEMU tarball in `cosim/patches/`, since no
+   QEMU source belongs in this repository.  `fetch-qemu.sh` keeps a pristine
+   copy next to the working tree for exactly that.
 3. Replace that software model with the Verilated `wish82586`, and check that
    `ai(4)` still attaches, sees its address, and passes packets.
 
