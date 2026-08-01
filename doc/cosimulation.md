@@ -12,42 +12,81 @@ Nothing here is built by `make test`; it is a separate, much slower loop.
 
 ```
 QEMU i386 machine                       this repository
-  NetBSD/i386, unmodified               cosim/qemu/          device model
-    ai(4) driver                        cosim/scripts/       build and image
-      |  ISA I/O ports and shared RAM   cosim/patches/       QEMU changes
+  NetBSD/i386, unmodified               cosim/patches/       QEMU device model
+    ef(4) driver                        cosim/scripts/       build, image, run
+      |  ISA I/O ports and shared RAM
       v
-  emulated StarLAN 10 card  <------>  Verilated wish82586
+  emulated 3C507 card  <------------>  Verilated wish82586
 ```
 
-The card being emulated is the AT&T StarLAN 10, which NetBSD drives with
-`ai(4)`.  It was chosen over the other 82586 ISA cards because:
+Any 82586 ISA card would do, as long as its NetBSD driver sits on
+`sys/dev/ic/i82586.c` - the driver core this project has been checking its
+shared memory layout against all along - so that a success here validates the
+reading of that code rather than a second reading of something else.  NetBSD
+ships three such drivers, and which one to use took some finding out.
 
-* `ai(4)` sits on `sys/dev/ic/i82586.c`, the same driver core this project has
-  been checking its shared memory layout against all along, so a success here
-  validates the reading of that code rather than a second reading of something
-  else.
-* Its host interface is a window of shared RAM plus a couple of I/O bits for
-  reset and channel attention, which is close to what `wish82586` already
-  presents: memory on the Wishbone master, RESET and CA in the CSR.
+## Which card
+
+The obvious choice is the **AT&T StarLAN 10** and its `ai(4)` driver: sixteen
+bytes of I/O of which four matter, one to reset the chip and one for channel
+attention, plus a window of shared RAM.  That is almost exactly what
+`wish82586` already presents, `CTRL.RST` and `CTRL.CA` standing in for the two
+I/O bytes.
+
+It cannot be used.  `ai(4)` faults the kernel before it reaches the chip:
+
+```c
+/* ai_find_mem_size(), sys/dev/isa/if_ai.c */
+if (bus_space_map(memt, maddr, size, 0, &memh) == 0) {
+        size = check_ie_present(sc, memt, maddr, size);
+```
+
+`check_ie_present()` takes a `bus_space_handle_t`, and gets handed `maddr`, the
+ISA physical address, instead of the `memh` that `bus_space_map()` just
+returned.  On i386 that handle is a kernel virtual address, so the first write
+inside `check_ie_present()` lands on an unmapped page:
+
+```
+uvm_fault(0xc15ad960, 0xdf000, 2) -> 0xe
+fatal page fault in supervisor mode
+Stopped in pid 0.0 (system) at netbsd:bus_space_set_region_1+0x27
+ai_match.part.0(...,7,360,0,d0000,0) at netbsd:ai_match.part.0+0x19e
+```
+
+Any real StarLAN 10 answering at the configured port would do the same to a
+modern NetBSD/i386.  The card is long gone, so nobody has noticed.  Fixing it
+is a one-line change to NetBSD, and changing NetBSD is exactly what this
+exercise is not allowed to do.
+
+So the co-simulation uses the **3Com 3C507**, driven by `ef(4)`, which sits on
+the same `sys/dev/ic/i82586.c`, probes cleanly, and reads its ethernet address
+off the card - something `ai(4)` does not do either, leaving `ai0` with
+whatever was on the stack.  The StarLAN 10 is emulated as well, since it was
+written before the fault was found and it is the simpler board; `run-cosim.py
+--card starlan10` will demonstrate the panic.
 
 ## The card's host interface
 
-From `doc/drivers/NetBSD/if_aireg.h`, which is why this card was picked: it is
-almost exactly what `wish82586` already presents.
+From `doc/drivers/NetBSD/if_efreg.h`.  Sixteen bytes of I/O with three banks
+over the first six, and a window of shared RAM:
 
-| offset      | what                                                      |
-|-------------|-----------------------------------------------------------|
-| I/O + 0     | any write resets the 82586                                 |
-| I/O + 1     | any write is a channel attention                           |
-| I/O + 6     | board type in the low nibble, revision in the high         |
-| I/O + 7     | attributes: bus width, speed, encoding, medium, boot ROM   |
-| memory      | the shared RAM window the 82586 and the host both work in  |
+| offset      | what                                                       |
+|-------------|------------------------------------------------------------|
+| I/O + 0..5  | bank 0: `*3COM*`; bank 1: ethernet address; bank 2: part number, revision |
+| I/O + 6     | control: bank select, interrupt enable, reset (active low)  |
+| I/O + 10    | any write clears the card's interrupt latch                 |
+| I/O + 11    | any write is a channel attention                            |
+| I/O + 13/14/15 | media, memory window address and size, interrupt line    |
+| memory      | the shared RAM window the 82586 and the host both work in   |
 
-Sixteen bytes of I/O space, of which four matter, and a memory window.  Reset
-and channel attention are `CTRL.RST` and `CTRL.CA` in the CSR; the memory
-window is what the Wishbone master already reads and writes.  The two board
-identification bytes are the only things with no equivalent, and they are
-constants.
+Reset and channel attention are `CTRL.RST` and `CTRL.CA` in the CSR; the memory
+window is what the Wishbone master already reads and writes.  Everything else
+is the board's own paperwork: constants, and an interrupt latch the card holds
+between the chip and the ISA bus.
+
+The chip sees a 16 MB address space with the window at the very *top* - both
+drivers compute every pointer as `offset + 2^24 - window_size` - so the SCP at
+`0xfffff4` is the last twelve bytes of the window.
 
 ## Versions
 
@@ -63,10 +102,30 @@ a script and the whole thing has to run without a display.
 
 The QEMU machine is `pc`, not `isapc`.  `isapc` looks like the obvious choice
 for an ISA card, but its ISA IDE never presents an ATAPI CD-ROM: the installer
-boots, probes, finds no root and resets, over and over.  `pc` has a working
-IDE and still has an ISA bus hanging off its LPC bridge, which is where the
-82586 card goes, so nothing is given up by using it.  256 MB of memory,
-because the install ramdisk does not fit in 64.
+boots, probes, finds no root and resets, over and over.  Booting an
+already-installed image there does not work either - NetBSD attaches `wdc0` and
+`wdc1` and then finds no drive on them, and its MP table is bad enough that the
+kernel complains about every APIC pin.  `pc` has a working IDE and still has an
+ISA bus hanging off its LPC bridge, which is where the 82586 card goes, so
+nothing is given up by using it.  256 MB of memory, because the install ramdisk
+does not fit in 64.
+
+Two things about that machine bite an ISA card with a memory window:
+
+* **The parallel port owns IRQ 7.**  So does the card, in the kernel's
+  configuration for it, and two edge-triggered ISA devices cannot share a line:
+  `isa_intr_establish()` fails, the driver notes it silently, and the interface
+  then transmits once and stops.  `-parallel none` clears it.
+* **The chipset shadows the card's memory window.**  On the `pc` machine the
+  i440FX PAM registers decide whether `0xc0000-0xfffff` is DRAM or the bus, and
+  SeaBIOS sets the whole range to read-only DRAM before the guest OS starts.
+  An ISA card claiming its window in the ISA address space is then simply not
+  there: the driver's writes are dropped and its reads come back as zeros.  The
+  symptom is a chip that answers `i82586_proberam()` perfectly - because the
+  busy flag it is supposed to clear reads as zero whether it cleared it or not
+  - and then never executes a single command.  The device model therefore
+  claims its window in the system address space, over the top of the shadow,
+  which is how a machine whose BIOS left that range to the bus would behave.
 
 ## What is and is not in git
 
@@ -91,7 +150,7 @@ Needed and not present:
 | what              | why                                                        | how |
 |-------------------|------------------------------------------------------------|-----|
 | `meson`           | QEMU 7.2 will not configure without it, and a release tarball has no bundled copy | Debian `meson`, or pip into a virtualenv |
-| `python3-pexpect` | drives the NetBSD installer over the serial console         | Debian `python3-pexpect`, or pip into a virtualenv |
+| `python3-pexpect` | drives the NetBSD installer, and `run-cosim.py`, over the serial console | Debian `python3-pexpect`, or pip into a virtualenv |
 | `libslirp-dev`    | QEMU 7.2 dropped its bundled slirp, so a from-source build has no `-netdev user` without it.  Only needed to prove the card passes traffic to the outside; the driver finding and attaching to the card does not need it | Debian package only |
 
 `meson` and `pexpect` can both be had without touching the system, by creating
@@ -106,19 +165,19 @@ its own - see the note at the top of `cosim/scripts/`.
 1. Build QEMU 7.2 from source and check it against the packaged one, then
    install NetBSD to a disk image and boot it.  Nothing custom yet: this is
    the baseline that everything later is compared against.
-2. Add the StarLAN 10 device model to QEMU, backed by a plain software 82586
-   so the driver can be brought up before the RTL is in the loop.
+2. Add the card to QEMU, backed by a plain software 82586, so the driver can be
+   brought up before the RTL is in the loop.  The chip is one file and the two
+   boards are another each, because step 3 replaces the chip and leaves the
+   boards alone.
 
-   There is no shell-only version of this that gets an attach.  `ai_match()`
-   reads the board type, and then `ai_find_mem_size()` tries 64K, 48K, 32K and
-   16K windows, calling `i82586_proberam()` on each, and that function is the
-   real gate:
+   There is no shell-only version of this that gets an attach.  Both drivers
+   gate on `i82586_proberam()`:
 
    ```c
    write16(SCP + 2, IE_SYSBUS_16BIT);   /* bus use byte      */
    write16(ISCP + 0, 1);                /* set the busy flag */
-   hwreset();                           /* write to I/O + 0  */
-   chan_attn();                         /* write to I/O + 1  */
+   hwreset();
+   chan_attn();
    delay(100);
    result = read16(ISCP + 0) == 0;      /* must have cleared */
    ```
@@ -126,33 +185,40 @@ its own - see the note at the top of `cosim/scripts/`.
    So the device has to walk the pointer chain and clear the ISCP busy flag on
    channel attention before NetBSD will believe there is a chip there at all -
    which is the same sequence `src/ie_core.sv` already implements, read from
-   the other side.
-
-   What the model needs:
-
-   * an ISA device with 16 bytes of I/O, a memory window and an IRQ;
-   * `I/O + 6` reading back with the board type in the low nibble - 1 for
-     StarLAN 10, which `ai_names[]` indexes as `SL_BOARD(val) - 1` - and the
-     revision in the high nibble;
-   * `I/O + 7` reading back the attribute bits from `if_aireg.h`;
-   * a write to `I/O + 0` resetting the chip, a write to `I/O + 1` being
-     channel attention;
-   * enough 82586 to do the initialisation handshake, then the SCB command
-     loop, then transmit and receive.
+   the other side.  After that come the SCB command loop, the command unit, and
+   the receive unit, all working in the shared window.
 
    Delivered as a patch against the QEMU tarball in `cosim/patches/`, since no
    QEMU source belongs in this repository.  `fetch-qemu.sh` keeps a pristine
    copy next to the working tree for exactly that.
 3. Replace that software model with the Verilated `wish82586`, and check that
-   `ai(4)` still attaches, sees its address, and passes packets.
+   `ef(4)` still attaches, sees its address, and passes packets.
 
-Step 1 is done: `cosim/scripts/` builds QEMU 7.2.22 from source, installs
-NetBSD 10.1/i386 over the network into `work/images/`, and `boot-netbsd.sh`
-boots it to a login prompt with `wm0` attached.
+Steps 1 and 2 are done.  `cosim/scripts/` builds QEMU 7.2.22 from source with
+the card patched in, installs NetBSD 10.1/i386 over the network into
+`work/images/`, and `run-cosim.py` boots it and checks the result:
 
-One thing learned driving the installer that is worth keeping: a process that
-is alive, writing to its log and growing its output file can still be going in
-circles.  This one installed NetBSD three times over while every check said it
-was healthy.  Counting how often the same screen has been answered is what
-catches it, and the loop now refuses to answer any one screen more than a
-handful of times.
+```
+ef0 at isa0 port 0x360-0x36f iomem 0xd0000-0xdffff irq 7
+    address 52:54:00:12:34:56, type 3C507-TP, rev. 10
+...
+4 packets transmitted, 4 packets received, 0.0% packet loss
+Name  Mtu   Network    Address            Ipkts Ierrs  Opkts Oerrs Colls
+ef0   1500  <Link>     52:54:00:12:34:56     12     0     19     0     0
+```
+
+That is an unmodified NetBSD driver initialising the chip, configuring it,
+setting its address, starting the receive unit, transmitting ARP and ICMP and
+receiving the replies, with no errors counted on either side.
+
+Two things learned along the way that are worth keeping:
+
+* A process that is alive, writing to its log and growing its output file can
+  still be going in circles.  The installer script installed NetBSD three times
+  over while every check said it was healthy.  Counting how often the same
+  screen has been answered is what catches it, and the loop now refuses to
+  answer any one screen more than a handful of times.
+* A device that answers the probe is not a device that works.  The 82586's
+  probe asks the chip to *clear* a flag, so a memory window that reads back as
+  zeros passes it perfectly while nothing at all is connected.  Every negative
+  check of this shape wants a positive one next to it.

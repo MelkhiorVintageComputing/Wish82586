@@ -4,3 +4,4 @@ build/
 *.fst
 .claude/*.tmp.*
 work/
+__pycache__/

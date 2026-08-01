@@ -1,0 +1,1398 @@
+An 82586 ISA Ethernet card for the i386 machine.
+
+Two boards, one chip.  hw/net/i82586.c is the Intel 82586 itself: the
+initialisation handshake, the SCB command loop, the command unit and the
+receive unit, working in a window of shared RAM the way the real part does.
+hw/net/starlan10.c and hw/net/elink507.c are the AT&T StarLAN 10 and the
+3Com 3C507 that wrap it, and differ only in the handful of I/O registers the
+driver probes them through.
+
+The register and structure layout is NetBSD's sys/dev/ic/i82586reg.h, which is
+also what the Wish82586 RTL is checked against; the point of the exercise is
+that an unmodified vintage driver cannot tell the two apart.
+
+Use the 3C507: NetBSD's ai(4) cannot attach on a modern kernel, because
+ai_find_mem_size() hands check_ie_present() the ISA physical address where a
+bus_space handle is wanted and the probe page faults.  ef(4) is clean, reads
+its ethernet address off the card, and sits on the same
+sys/dev/ic/i82586.c core.
+
+  -netdev user,id=n0 -device isa-3c507,netdev=n0
+
+diff -urN qemu-src.orig/hw/net/Kconfig qemu-src/hw/net/Kconfig
+--- qemu-src.orig/hw/net/Kconfig	2025-12-06 14:17:12.000000000 +0100
++++ qemu-src/hw/net/Kconfig	2026-08-01 07:19:45.992357026 +0200
+@@ -67,6 +67,11 @@
+     depends on ISA_BUS
+     select NE2000_COMMON
+ 
++config STARLAN10
++    bool
++    default y
++    depends on ISA_BUS
++
+ config OPENCORES_ETH
+     bool
+ 
+diff -urN qemu-src.orig/hw/net/elink507.c qemu-src/hw/net/elink507.c
+--- qemu-src.orig/hw/net/elink507.c	1970-01-01 01:00:00.000000000 +0100
++++ qemu-src/hw/net/elink507.c	2026-08-01 08:55:40.335778912 +0200
+@@ -0,0 +1,330 @@
++/*
++ * 3Com 3C507 EtherLink 16 ISA Ethernet card.
++ *
++ * Written for the Wish82586 project.  Like the StarLAN 10 next door this is an
++ * 82586 with a window of shared RAM, so the chip model is shared; what differs
++ * is the paperwork the board puts in front of it - a signature, an ethernet
++ * address, and its own address decoding, all read back through three banks at
++ * the same sixteen I/O ports.
++ *
++ * NetBSD drives this board with ef(4), which sits on the shared
++ * sys/dev/ic/i82586.c core - the same core this project has been reading its
++ * shared memory layout out of all along.
++ *
++ * It is emulated in preference to the StarLAN 10 because ai(4) cannot attach
++ * on a modern NetBSD: ai_find_mem_size() passes check_ie_present() the ISA
++ * physical address where a bus_space handle is wanted, so the first board that
++ * answers the probe takes the kernel down with a page fault.  See
++ * doc/cosimulation.md in the Wish82586 tree.
++ *
++ * The layout is from NetBSD's sys/dev/isa/if_efreg.h:
++ *
++ *   I/O + 0..5   bank 0: "*3COM*"   bank 1: ethernet address
++ *                bank 2: part number, revision, date of manufacture
++ *   I/O + 6      control: bank select, interrupt enable, reset (active low)
++ *   I/O + 10     any write clears the interrupt latch
++ *   I/O + 11     any write is a channel attention
++ *   I/O + 13     media
++ *   I/O + 14     shared memory address and size
++ *   I/O + 15     interrupt line
++ *
++ * This work is licensed under the GNU GPL license version 2 or later.
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "qemu/units.h"
++#include "hw/irq.h"
++#include "exec/address-spaces.h"
++#include "hw/isa/isa.h"
++#include "hw/qdev-properties.h"
++#include "migration/vmstate.h"
++#include "net/net.h"
++#include "qom/object.h"
++#include "sysemu/sysemu.h"
++#include "i82586.h"
++
++#define TYPE_ISA_ELINK507 "isa-3c507"
++OBJECT_DECLARE_SIMPLE_TYPE(ISAElink507State, ISA_ELINK507)
++
++#define EF_IOSIZE       16
++#define EF_CTRL         6
++#define EF_ICTRL        10
++#define EF_ATTN         11
++#define EF_MEDIA        13
++#define EF_MADDR        14
++#define EF_IRQ          15
++
++#define EF_CTRL_BANK    0x03
++#define EF_CTRL_IEN     0x04
++#define EF_CTRL_16BIT   0x10
++#define EF_CTRL_LOOP    0x20
++#define EF_CTRL_NRST    0x80    /* held low resets the 82586 */
++
++#define EF_MADDR_HIGH   0x20
++#define EF_MADDR_BASE   0xc0000
++#define EF_MADDR_SHIFT  12
++#define EF_MSIZE_STEP   (16 * KiB)
++
++/*
++ * ef_attach() picks the 3C507-TP over the AUI/BNC 3C507 purely on the middle
++ * byte of the part number, and then reads its media out of the -TP table, so
++ * these two go together.
++ */
++static const uint8_t ef_partno[3] = { 0x60, 0x71, 0x02 };
++
++struct ISAElink507State {
++    ISADevice parent_obj;
++
++    uint32_t iobase;
++    uint32_t isairq;
++    uint32_t iomem;
++    uint32_t memsize;
++    uint32_t revision;          /* in BCD, as the card reports it */
++
++    MemoryRegion io;
++    MemoryRegion ram;
++
++    qemu_irq isa_irq;
++    bool intr_latch;            /* set by the chip, cleared through EF_ICTRL */
++    uint8_t ctrl;
++
++    I82586State i82586;
++};
++
++/*
++ * The card latches the chip's interrupt and gates it with the enable bit in
++ * the control register, which is what lets ef_intrhook() mask and acknowledge
++ * around the handler.
++ */
++static void elink507_update_irq(ISAElink507State *s)
++{
++    qemu_set_irq(s->isa_irq, s->intr_latch && (s->ctrl & EF_CTRL_IEN));
++}
++
++static void elink507_chip_irq(void *opaque, int n, int level)
++{
++    ISAElink507State *s = opaque;
++
++    if (level) {
++        s->intr_latch = true;
++    }
++    elink507_update_irq(s);
++}
++
++static uint64_t elink507_io_read(void *opaque, hwaddr addr, unsigned size)
++{
++    ISAElink507State *s = opaque;
++
++    if (addr < 6) {
++        switch (s->ctrl & EF_CTRL_BANK) {
++        case 0:
++            return "*3COM*"[addr];
++        case 1:
++            return s->i82586.conf.macaddr.a[addr];
++        case 2:
++            if (addr < 3) {
++                return ef_partno[addr];
++            }
++            if (addr == 3) {
++                return s->revision & 0xff;
++            }
++            return 0;           /* date of manufacture; nothing reads it */
++        default:
++            return 0xff;
++        }
++    }
++
++    switch (addr) {
++    case EF_CTRL:
++        return s->ctrl;
++    case EF_MEDIA:
++        return 0;
++    case EF_MADDR:
++        /*
++         * Where the window is and how big it is, in the card's own encoding:
++         * base above 0xc0000 in units of 4K, size in units of 16K less one.
++         */
++        return (((s->iomem - EF_MADDR_BASE) >> EF_MADDR_SHIFT) & 0x1c) |
++               ((s->memsize / EF_MSIZE_STEP) - 1);
++    case EF_IRQ:
++        return s->isairq & 0x0f;
++    default:
++        return 0xff;
++    }
++}
++
++static void elink507_io_write(void *opaque, hwaddr addr, uint64_t val,
++                              unsigned size)
++{
++    ISAElink507State *s = opaque;
++
++    switch (addr) {
++    case EF_CTRL:
++        s->ctrl = val;
++        if (!(val & EF_CTRL_NRST)) {
++            i82586_reset(&s->i82586);
++            s->intr_latch = false;
++        }
++        elink507_update_irq(s);
++        break;
++    case EF_ICTRL:
++        s->intr_latch = false;
++        elink507_update_irq(s);
++        break;
++    case EF_ATTN:
++        i82586_channel_attention(&s->i82586);
++        break;
++    default:
++        break;
++    }
++}
++
++static const MemoryRegionOps elink507_io_ops = {
++    .read = elink507_io_read,
++    .write = elink507_io_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .impl = {
++        .min_access_size = 1,
++        .max_access_size = 1,
++    },
++};
++
++static bool elink507_can_receive(NetClientState *nc)
++{
++    ISAElink507State *s = qemu_get_nic_opaque(nc);
++
++    return i82586_can_receive(&s->i82586);
++}
++
++static ssize_t elink507_receive(NetClientState *nc, const uint8_t *buf,
++                                size_t size)
++{
++    ISAElink507State *s = qemu_get_nic_opaque(nc);
++
++    return i82586_receive(&s->i82586, buf, size);
++}
++
++static NetClientInfo net_elink507_info = {
++    .type = NET_CLIENT_DRIVER_NIC,
++    .size = sizeof(NICState),
++    .can_receive = elink507_can_receive,
++    .receive = elink507_receive,
++};
++
++static void elink507_reset(DeviceState *dev)
++{
++    ISAElink507State *s = ISA_ELINK507(dev);
++
++    /* Out of power-on reset the card shows bank 0, so the signature reads. */
++    s->ctrl = 0;
++    s->intr_latch = false;
++    i82586_reset(&s->i82586);
++    elink507_update_irq(s);
++}
++
++static void elink507_realize(DeviceState *dev, Error **errp)
++{
++    ISADevice *isadev = ISA_DEVICE(dev);
++    ISAElink507State *s = ISA_ELINK507(dev);
++
++    if (s->memsize != 16 * KiB && s->memsize != 32 * KiB &&
++        s->memsize != 48 * KiB && s->memsize != 64 * KiB) {
++        error_setg(errp, "memsize must be 16384, 32768, 49152 or 65536");
++        return;
++    }
++    /* The address encoding has room for 0xc0000 to 0xdc000 in 16K steps. */
++    if (s->iomem < EF_MADDR_BASE || s->iomem > EF_MADDR_BASE + 0x1c000 ||
++        (s->iomem & 0x3fff)) {
++        error_setg(errp, "iomem must be a multiple of 16384 in "
++                   "0xc0000-0xdc000");
++        return;
++    }
++
++    memory_region_init_io(&s->io, OBJECT(dev), &elink507_io_ops, s,
++                          "3c507.io", EF_IOSIZE);
++    isa_register_ioport(isadev, &s->io, s->iobase);
++
++    memory_region_init_ram(&s->ram, OBJECT(dev), "3c507.ram", s->memsize,
++                           &error_fatal);
++    /*
++     * The window goes into the system address space rather than the ISA one,
++     * over the top of whatever else claims the range.  On the pc machine the
++     * chipset's PAM registers decide whether 0xc0000-0xfffff is DRAM or the
++     * bus, and SeaBIOS shadows the whole of it as read-only DRAM before the
++     * guest OS runs; an ISA card's memory window would simply not be there.
++     * A machine whose BIOS left the range to the bus - which is what a period
++     * PC with this card installed would have been set up to do - behaves the
++     * way this does.
++     */
++    memory_region_add_subregion_overlap(get_system_memory(), s->iomem,
++                                        &s->ram, 2);
++
++    s->isa_irq = isa_get_irq(isadev, s->isairq);
++    s->i82586.irq = qemu_allocate_irq(elink507_chip_irq, s, 0);
++
++    s->i82586.mem = memory_region_get_ram_ptr(&s->ram);
++    s->i82586.mem_size = s->memsize;
++    s->i82586.mem_base = (1 << 24) - s->memsize;
++
++    qemu_macaddr_default_if_unset(&s->i82586.conf.macaddr);
++    memcpy(s->i82586.ia, s->i82586.conf.macaddr.a, 6);
++
++    elink507_reset(dev);
++
++    s->i82586.nic = qemu_new_nic(&net_elink507_info, &s->i82586.conf,
++                                 object_get_typename(OBJECT(dev)), dev->id,
++                                 &dev->mem_reentrancy_guard, s);
++    qemu_format_nic_info_str(qemu_get_queue(s->i82586.nic),
++                             s->i82586.conf.macaddr.a);
++}
++
++static const VMStateDescription vmstate_elink507 = {
++    .name = "3c507",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (VMStateField[]) {
++        VMSTATE_BOOL(intr_latch, ISAElink507State),
++        VMSTATE_UINT8(ctrl, ISAElink507State),
++        VMSTATE_STRUCT(i82586, ISAElink507State, 0, vmstate_i82586,
++                       I82586State),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static Property elink507_properties[] = {
++    DEFINE_PROP_UINT32("iobase", ISAElink507State, iobase, 0x360),
++    DEFINE_PROP_UINT32("irq", ISAElink507State, isairq, 7),
++    DEFINE_PROP_UINT32("iomem", ISAElink507State, iomem, 0xd0000),
++    DEFINE_PROP_UINT32("memsize", ISAElink507State, memsize, 64 * KiB),
++    DEFINE_PROP_UINT32("revision", ISAElink507State, revision, 0x10),
++    DEFINE_NIC_PROPERTIES(ISAElink507State, i82586.conf),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void elink507_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->realize = elink507_realize;
++    dc->reset = elink507_reset;
++    dc->desc = "3Com 3C507 EtherLink 16 (Intel 82586)";
++    dc->vmsd = &vmstate_elink507;
++    device_class_set_props(dc, elink507_properties);
++    set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
++}
++
++static const TypeInfo elink507_info = {
++    .name          = TYPE_ISA_ELINK507,
++    .parent        = TYPE_ISA_DEVICE,
++    .instance_size = sizeof(ISAElink507State),
++    .class_init    = elink507_class_init,
++};
++
++static void elink507_register_types(void)
++{
++    type_register_static(&elink507_info);
++}
++
++type_init(elink507_register_types)
+diff -urN qemu-src.orig/hw/net/i82586.c qemu-src/hw/net/i82586.c
+--- qemu-src.orig/hw/net/i82586.c	1970-01-01 01:00:00.000000000 +0100
++++ qemu-src/hw/net/i82586.c	2026-08-01 09:11:37.365402498 +0200
+@@ -0,0 +1,686 @@
++/*
++ * Intel 82586 Ethernet controller, the original 16-bit part.
++ *
++ * Written for the Wish82586 project.  The register and structure layout comes
++ * from NetBSD's sys/dev/ic/i82586reg.h, which is the same authority the RTL in
++ * that project is checked against, so a disagreement between the two shows up
++ * as a driver failure rather than as two self-consistent readings.
++ *
++ * Everything the chip does happens on channel attention, synchronously with
++ * the guest's I/O write.  The real part is of course concurrent with the host,
++ * but the drivers all poll the SCB command word or the command block status
++ * afterwards, so doing the work up front is indistinguishable to them and
++ * removes a whole class of timing question from the co-simulation.
++ *
++ * This work is licensed under the GNU GPL license version 2 or later.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "migration/vmstate.h"
++#include "net/eth.h"
++#include "i82586.h"
++
++/* Longest thing that can arrive on or leave for the wire, without the FCS. */
++#define I82586_MAX_FRAME    1514
++
++/* ---- shared memory layout, from i82586reg.h ---------------------------- */
++
++#define IE_SCP_ADDR         0xfffff4    /* wired into the chip */
++#define IE_SCP_SZ           12
++#define IE_SCP_BUS_USE      2
++#define IE_SCP_ISCP         8
++
++#define IE_ISCP_BUSY        0
++#define IE_ISCP_SCB         2
++#define IE_ISCP_BASE        4
++
++#define IE_SCB_STATUS       0
++#define IE_SCB_CMD          2
++#define IE_SCB_CMDLST       4
++#define IE_SCB_RCVLST       6
++
++/* SCB status and command bits */
++#define IE_ST_CX            0x8000
++#define IE_ST_FR            0x4000
++#define IE_ST_CNA           0x2000
++#define IE_ST_RNR           0x1000
++#define IE_ST_WHENCE        0xf000
++
++#define IE_CUC_MASK         0x0700
++#define IE_CUC_START        0x0100
++#define IE_CUC_RESUME       0x0200
++#define IE_CUC_SUSPEND      0x0300
++#define IE_CUC_ABORT        0x0400
++
++#define IE_RUC_MASK         0x0070
++#define IE_RUC_START        0x0010
++#define IE_RUC_RESUME       0x0020
++#define IE_RUC_SUSPEND      0x0030
++#define IE_RUC_ABORT        0x0040
++
++#define IE_SCB_CMD_RESET    0x0080
++
++/* Command unit and receive unit states, as they appear in the status word */
++#define CU_IDLE             0
++#define CU_SUSPENDED        1
++#define CU_ACTIVE           2
++
++#define RU_IDLE             0
++#define RU_SUSPENDED        1
++#define RU_NO_RESOURCES     2
++#define RU_READY            4
++
++/* Command block */
++#define IE_CMD_STATUS       0
++#define IE_CMD_CMD          2
++#define IE_CMD_LINK         4
++#define IE_CMD_BODY         6
++
++#define IE_STAT_COMPL       0x8000
++#define IE_STAT_BUSY        0x4000
++#define IE_STAT_OK          0x2000
++
++#define IE_CMD_LAST         0x8000    /* end of list */
++#define IE_CMD_SUSPEND      0x4000
++#define IE_CMD_INTR         0x2000
++#define IE_CMD_OPCODE       0x0007
++
++enum {
++    IE_CMD_NOP = 0, IE_CMD_IASETUP = 1, IE_CMD_CONFIG = 2, IE_CMD_MCAST = 3,
++    IE_CMD_XMIT = 4, IE_CMD_TDR = 5, IE_CMD_DUMP = 6, IE_CMD_DIAGNOSE = 7
++};
++
++/* Transmit buffer descriptor */
++#define IE_XBD_FLAGS        0
++#define IE_XBD_NEXT         2
++#define IE_XBD_BUF          4
++#define IE_TBD_EOL          0x8000
++#define IE_TBD_CNTMASK      0x3fff
++
++/* Transmit command body */
++#define IE_XMIT_DESC        (IE_CMD_BODY + 0)
++#define IE_XMIT_EADDR       (IE_CMD_BODY + 2)
++#define IE_XMIT_LEN         (IE_CMD_BODY + 8)
++
++#define IE_TDR_SUCCESS      0x8000
++
++/* Receive frame descriptor */
++#define IE_RFRAME_SZ        24
++#define IE_RFRAME_STATUS    0
++#define IE_RFRAME_LAST      2
++#define IE_RFRAME_NEXT      4
++#define IE_RFRAME_BUFDESC   6
++
++#define IE_FD_EOL           0x8000
++#define IE_FD_SUSP          0x4000
++
++#define IE_FD_COMPLETE      0x8000
++#define IE_FD_OK            0x2000
++#define IE_FD_RNR           0x0200
++
++/* Receive buffer descriptor */
++#define IE_RBD_STATUS       0
++#define IE_RBD_NEXT         2
++#define IE_RBD_BUFADDR      4
++#define IE_RBD_BUFLEN       8
++
++#define IE_RBD_LAST         0x8000    /* last buffer of a frame */
++#define IE_RBD_USED         0x4000
++#define IE_RBD_CNTMASK      0x3fff
++#define IE_RBD_EOL          0x8000    /* in the length field: last buffer */
++
++#define IE_NULL             0xffff
++
++/*
++ * CONFIGURE bytes we care about.  Byte 3 is the one NetBSD writes as 0x2e:
++ * six-byte addresses, AL-LOC set, so the whole frame including its header
++ * lives in the buffers.
++ */
++#define CFG_AL_LOC(s)       ((s)->config[3] & 0x08)
++#define CFG_PROMISC(s)      ((s)->config[8] & 0x01)
++#define CFG_NO_BROADCAST(s) ((s)->config[8] & 0x02)
++
++/* A command chain longer than this is a runaway, not a driver. */
++#define CMD_CHAIN_LIMIT     1024
++
++/* ---- the memory window ------------------------------------------------- */
++
++static bool win_ok(I82586State *s, uint32_t off, uint32_t len)
++{
++    return off <= s->mem_size && len <= s->mem_size - off;
++}
++
++/* Chip address to window offset; IE_NULL-ish out-of-range comes back as ~0. */
++static uint32_t addr_to_off(I82586State *s, uint32_t addr)
++{
++    addr &= 0xffffff;
++    if (addr < s->mem_base) {
++        return UINT32_MAX;
++    }
++    return addr - s->mem_base;
++}
++
++static uint8_t rd8(I82586State *s, uint32_t off)
++{
++    return win_ok(s, off, 1) ? s->mem[off] : 0;
++}
++
++static uint16_t rd16(I82586State *s, uint32_t off)
++{
++    return win_ok(s, off, 2) ? lduw_le_p(s->mem + off) : 0;
++}
++
++static uint32_t rd32(I82586State *s, uint32_t off)
++{
++    return win_ok(s, off, 4) ? ldl_le_p(s->mem + off) : 0;
++}
++
++static void wr16(I82586State *s, uint32_t off, uint16_t v)
++{
++    if (win_ok(s, off, 2)) {
++        stw_le_p(s->mem + off, v);
++    }
++}
++
++/* ---- interrupt --------------------------------------------------------- */
++
++/*
++ * The interrupt follows what the host can read out of the SCB, never an
++ * internal flag, so a driver woken by it always finds the status already
++ * there.  ai(4) establishes an edge-triggered handler, so the drop back to
++ * zero on acknowledge is what arms the next one.
++ */
++static void update_irq(I82586State *s)
++{
++    qemu_set_irq(s->irq, (s->flags & IE_ST_WHENCE) != 0);
++}
++
++static uint16_t scb_status(I82586State *s)
++{
++    return (s->flags & IE_ST_WHENCE) |
++           ((uint16_t)s->cu_state << 8) |
++           ((uint16_t)s->ru_state << 4);
++}
++
++static void publish_status(I82586State *s)
++{
++    wr16(s, s->scb + IE_SCB_STATUS, scb_status(s));
++    update_irq(s);
++}
++
++/* ---- initialisation ---------------------------------------------------- */
++
++void i82586_reset(I82586State *s)
++{
++    s->initialised = false;
++    s->scb = 0;
++    s->cb_base = 0;
++    s->flags = 0;
++    s->cu_state = CU_IDLE;
++    s->ru_state = RU_IDLE;
++    s->rfd = IE_NULL;
++    s->rbd = IE_NULL;
++    s->n_mcast = 0;
++    memset(s->config, 0, sizeof(s->config));
++    /* Power-on defaults, from the datasheet: six-byte addresses, AL-LOC set. */
++    s->config[0] = 0x0a;
++    s->config[3] = 0x2e;
++    update_irq(s);
++}
++
++/*
++ * The first channel attention after reset makes the chip walk the pointer
++ * chain the driver laid out, clear the ISCP busy flag and report CX and CNA.
++ * i82586_proberam() in the NetBSD driver is exactly this sequence, and the
++ * busy flag coming back clear is what convinces it a chip is there at all.
++ */
++static void initialise(I82586State *s)
++{
++    uint32_t scp, iscp;
++    uint16_t scb_off;
++
++    if (s->mem_size < IE_SCP_SZ) {
++        return;
++    }
++    scp = s->mem_size - IE_SCP_SZ;      /* the SCP sits at the top: 0xfffff4 */
++
++    iscp = addr_to_off(s, rd32(s, scp + IE_SCP_ISCP));
++    if (!win_ok(s, iscp, 8)) {
++        return;
++    }
++
++    scb_off = rd16(s, iscp + IE_ISCP_SCB);
++    s->cb_base = addr_to_off(s, rd32(s, iscp + IE_ISCP_BASE));
++    if (!win_ok(s, s->cb_base, 1)) {
++        return;
++    }
++    s->scb = s->cb_base + scb_off;
++    if (!win_ok(s, s->scb, 16)) {
++        return;
++    }
++
++    wr16(s, iscp + IE_ISCP_BUSY, 0);
++
++    s->initialised = true;
++    s->flags = IE_ST_CX | IE_ST_CNA;
++    publish_status(s);
++}
++
++/* ---- command unit ------------------------------------------------------ */
++
++static void cmd_ia_setup(I82586State *s, uint32_t cb)
++{
++    if (win_ok(s, cb + IE_CMD_BODY, 6)) {
++        memcpy(s->ia, s->mem + cb + IE_CMD_BODY, 6);
++    }
++}
++
++static void cmd_configure(I82586State *s, uint32_t cb)
++{
++    unsigned n = rd8(s, cb + IE_CMD_BODY) & 0x0f;
++
++    if (n < 2) {
++        n = 2;
++    }
++    if (n > sizeof(s->config)) {
++        n = sizeof(s->config);
++    }
++    if (win_ok(s, cb + IE_CMD_BODY, n)) {
++        memcpy(s->config, s->mem + cb + IE_CMD_BODY, n);
++    }
++}
++
++static void cmd_mc_setup(I82586State *s, uint32_t cb)
++{
++    unsigned bytes = rd16(s, cb + IE_CMD_BODY);
++    unsigned i;
++
++    s->n_mcast = 0;
++    for (i = 0; i + 6 <= bytes && s->n_mcast < I82586_MAX_MCAST; i += 6) {
++        uint32_t off = cb + IE_CMD_BODY + 2 + i;
++
++        if (!win_ok(s, off, 6)) {
++            break;
++        }
++        memcpy(s->mcast[s->n_mcast++], s->mem + off, 6);
++    }
++}
++
++/*
++ * Gather the frame out of the transmit buffer descriptor chain and put it on
++ * the wire.  With AL-LOC set - which is what every driver in doc/drivers
++ * configures - the buffers already hold the whole frame, addresses and all.
++ * With AL-LOC clear the chip supplies the header from the command block and
++ * its own individual address.
++ */
++static bool cmd_transmit(I82586State *s, uint32_t cb)
++{
++    uint8_t frame[I82586_MAX_FRAME];
++    unsigned len = 0;
++    uint16_t tbd = rd16(s, cb + IE_XMIT_DESC);
++    unsigned guard;
++
++    if (!CFG_AL_LOC(s)) {
++        if (len + 14 > sizeof(frame) || !win_ok(s, cb + IE_XMIT_EADDR, 6)) {
++            return false;
++        }
++        memcpy(frame, s->mem + cb + IE_XMIT_EADDR, 6);
++        memcpy(frame + 6, s->ia, 6);
++        /* The length/type field goes out most significant byte first. */
++        stw_be_p(frame + 12, rd16(s, cb + IE_XMIT_LEN));
++        len = 14;
++    }
++
++    for (guard = 0; tbd != IE_NULL && guard < CMD_CHAIN_LIMIT; guard++) {
++        uint32_t tb = s->cb_base + tbd;
++        uint16_t flags;
++        uint32_t buf;
++        unsigned n;
++
++        if (!win_ok(s, tb, 8)) {
++            return false;
++        }
++        flags = rd16(s, tb + IE_XBD_FLAGS);
++        n = flags & IE_TBD_CNTMASK;
++        buf = addr_to_off(s, rd32(s, tb + IE_XBD_BUF));
++
++        if (!win_ok(s, buf, n) || len + n > sizeof(frame)) {
++            return false;
++        }
++        memcpy(frame + len, s->mem + buf, n);
++        len += n;
++
++        if (flags & IE_TBD_EOL) {
++            break;
++        }
++        tbd = rd16(s, tb + IE_XBD_NEXT);
++    }
++
++    if (len < ETH_ZLEN) {
++        memset(frame + len, 0, ETH_ZLEN - len);
++        len = ETH_ZLEN;
++    }
++
++    qemu_send_packet(qemu_get_queue(s->nic), frame, len);
++    return true;
++}
++
++/* Returns the status word to store in the command block. */
++static uint16_t run_command(I82586State *s, uint32_t cb, uint16_t cmd)
++{
++    switch (cmd & IE_CMD_OPCODE) {
++    case IE_CMD_NOP:
++        break;
++    case IE_CMD_IASETUP:
++        cmd_ia_setup(s, cb);
++        break;
++    case IE_CMD_CONFIG:
++        cmd_configure(s, cb);
++        break;
++    case IE_CMD_MCAST:
++        cmd_mc_setup(s, cb);
++        break;
++    case IE_CMD_XMIT:
++        if (!cmd_transmit(s, cb)) {
++            return IE_STAT_COMPL;       /* complete, but not OK */
++        }
++        break;
++    case IE_CMD_TDR:
++        /* No cable to reflect off; report a clean line. */
++        wr16(s, cb + IE_CMD_BODY, IE_TDR_SUCCESS);
++        break;
++    case IE_CMD_DUMP:
++        /* Not implemented; completes without OK, as the RTL does. */
++        return IE_STAT_COMPL;
++    case IE_CMD_DIAGNOSE:
++        break;
++    }
++    return IE_STAT_COMPL | IE_STAT_OK;
++}
++
++static void cu_run(I82586State *s, uint16_t cbl)
++{
++    unsigned guard;
++
++    s->cu_state = CU_ACTIVE;
++
++    for (guard = 0; guard < CMD_CHAIN_LIMIT; guard++) {
++        uint32_t cb = s->cb_base + cbl;
++        uint16_t cmd, status;
++
++        if (cbl == IE_NULL || !win_ok(s, cb, IE_CMD_BODY)) {
++            break;
++        }
++        cmd = rd16(s, cb + IE_CMD_CMD);
++        status = run_command(s, cb, cmd);
++        wr16(s, cb + IE_CMD_STATUS, status);
++
++        if (cmd & IE_CMD_INTR) {
++            s->flags |= IE_ST_CX;
++        }
++        if (cmd & IE_CMD_LAST) {
++            s->cu_state = CU_IDLE;
++            s->flags |= IE_ST_CNA;
++            return;
++        }
++        if (cmd & IE_CMD_SUSPEND) {
++            s->cu_state = CU_SUSPENDED;
++            s->flags |= IE_ST_CNA;
++            return;
++        }
++        cbl = rd16(s, cb + IE_CMD_LINK);
++    }
++
++    s->cu_state = CU_IDLE;
++    s->flags |= IE_ST_CNA;
++}
++
++static void cu_command(I82586State *s, unsigned cuc)
++{
++    switch (cuc) {
++    case IE_CUC_START >> 8:
++        cu_run(s, rd16(s, s->scb + IE_SCB_CMDLST));
++        break;
++    case IE_CUC_RESUME >> 8:
++        if (s->cu_state == CU_SUSPENDED) {
++            cu_run(s, rd16(s, s->scb + IE_SCB_CMDLST));
++        }
++        break;
++    case IE_CUC_SUSPEND >> 8:
++        if (s->cu_state == CU_ACTIVE) {
++            s->cu_state = CU_SUSPENDED;
++            s->flags |= IE_ST_CNA;
++        }
++        break;
++    case IE_CUC_ABORT >> 8:
++        if (s->cu_state != CU_IDLE) {
++            s->cu_state = CU_IDLE;
++            s->flags |= IE_ST_CNA;
++        }
++        break;
++    default:
++        break;
++    }
++}
++
++/* ---- receive unit ------------------------------------------------------ */
++
++static void ru_start(I82586State *s)
++{
++    s->rfd = rd16(s, s->scb + IE_SCB_RCVLST);
++    if (!win_ok(s, s->cb_base + s->rfd, IE_RFRAME_SZ)) {
++        s->ru_state = RU_NO_RESOURCES;
++        s->flags |= IE_ST_RNR;
++        return;
++    }
++    /*
++     * Only the first descriptor of the list carries a buffer pointer; the
++     * rest hold 0xffff and inherit wherever the buffer list has got to.
++     */
++    s->rbd = rd16(s, s->cb_base + s->rfd + IE_RFRAME_BUFDESC);
++    s->ru_state = RU_READY;
++    qemu_flush_queued_packets(qemu_get_queue(s->nic));
++}
++
++static void ru_command(I82586State *s, unsigned ruc)
++{
++    switch (ruc) {
++    case IE_RUC_START >> 4:
++        ru_start(s);
++        break;
++    case IE_RUC_RESUME >> 4:
++        if (s->ru_state == RU_SUSPENDED) {
++            s->ru_state = RU_READY;
++            qemu_flush_queued_packets(qemu_get_queue(s->nic));
++        }
++        break;
++    case IE_RUC_SUSPEND >> 4:
++        if (s->ru_state == RU_READY) {
++            s->ru_state = RU_SUSPENDED;
++        }
++        break;
++    case IE_RUC_ABORT >> 4:
++        s->ru_state = RU_IDLE;
++        break;
++    default:
++        break;
++    }
++}
++
++bool i82586_can_receive(I82586State *s)
++{
++    return s->initialised && s->ru_state == RU_READY;
++}
++
++static bool address_wanted(I82586State *s, const uint8_t *dst)
++{
++    unsigned i;
++
++    if (CFG_PROMISC(s)) {
++        return true;
++    }
++    if (!memcmp(dst, s->ia, 6)) {
++        return true;
++    }
++    if (!(dst[0] & 1)) {
++        return false;
++    }
++    if (is_broadcast_ether_addr(dst)) {
++        return !CFG_NO_BROADCAST(s);
++    }
++    for (i = 0; i < s->n_mcast; i++) {
++        if (!memcmp(dst, s->mcast[i], 6)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++/*
++ * Store a frame into the receive frame area.  The frame descriptor at the head
++ * of the list takes the status, and the data goes into buffers taken from the
++ * buffer descriptor list in order - which is what ieget() in the NetBSD driver
++ * assumes when it walks them by index.
++ */
++ssize_t i82586_receive(I82586State *s, const uint8_t *buf, size_t size)
++{
++    uint32_t fd = s->cb_base + s->rfd;
++    const uint8_t *p = buf;
++    size_t left = size;
++    uint16_t last, status;
++    bool starved = false;
++    unsigned guard;
++
++    if (!i82586_can_receive(s)) {
++        return -1;
++    }
++    if (!win_ok(s, fd, IE_RFRAME_SZ) || !address_wanted(s, buf)) {
++        return size;
++    }
++
++    for (guard = 0; left > 0 && guard < CMD_CHAIN_LIMIT; guard++) {
++        uint32_t rb = s->cb_base + s->rbd;
++        uint16_t lenfield, next;
++        uint32_t bufoff;
++        unsigned room, n;
++
++        if (s->rbd == IE_NULL || !win_ok(s, rb, 12)) {
++            starved = true;
++            break;
++        }
++        lenfield = rd16(s, rb + IE_RBD_BUFLEN);
++        room = lenfield & IE_RBD_CNTMASK;
++        bufoff = addr_to_off(s, rd32(s, rb + IE_RBD_BUFADDR));
++        next = rd16(s, rb + IE_RBD_NEXT);
++
++        n = left < room ? left : room;
++        if (!win_ok(s, bufoff, n)) {
++            starved = true;
++            break;
++        }
++        memcpy(s->mem + bufoff, p, n);
++        p += n;
++        left -= n;
++
++        wr16(s, rb + IE_RBD_STATUS,
++             n | IE_RBD_USED | (left == 0 ? IE_RBD_LAST : 0));
++
++        if (lenfield & IE_RBD_EOL) {
++            /* That was the last buffer the host had made available. */
++            s->rbd = IE_NULL;
++            starved = true;
++            break;
++        }
++        s->rbd = next;
++    }
++
++    /*
++     * A frame that did not fit is reported without OK, which is what sends
++     * i82586_rint() down its drop path; one that fitted exactly but used the
++     * last buffer is good, and only the receive unit stops.
++     */
++    status = IE_FD_COMPLETE | (left > 0 ? 0 : IE_FD_OK);
++    if (starved) {
++        status |= IE_FD_RNR;
++        s->ru_state = RU_NO_RESOURCES;
++        s->flags |= IE_ST_RNR;
++    }
++
++    wr16(s, fd + IE_RFRAME_BUFDESC, s->rbd);
++    wr16(s, fd + IE_RFRAME_STATUS, status);
++    s->flags |= IE_ST_FR;
++
++    last = rd16(s, fd + IE_RFRAME_LAST);
++    s->rfd = rd16(s, fd + IE_RFRAME_NEXT);
++    if (last & IE_FD_EOL) {
++        s->ru_state = RU_NO_RESOURCES;
++        s->flags |= IE_ST_RNR;
++    } else if (last & IE_FD_SUSP) {
++        s->ru_state = RU_SUSPENDED;
++        s->flags |= IE_ST_RNR;
++    }
++
++    publish_status(s);
++    return size;
++}
++
++/* ---- channel attention ------------------------------------------------- */
++
++void i82586_channel_attention(I82586State *s)
++{
++    uint16_t cmd;
++
++    if (!s->initialised) {
++        initialise(s);
++        return;
++    }
++
++    cmd = rd16(s, s->scb + IE_SCB_CMD);
++
++    if (cmd & IE_SCB_CMD_RESET) {
++        i82586_reset(s);
++        return;
++    }
++
++    /*
++     * Acknowledge first, then act: an event raised by this very command must
++     * survive the acknowledgement that came with it.
++     */
++    s->flags &= ~(cmd & IE_ST_WHENCE);
++    update_irq(s);
++
++    cu_command(s, (cmd & IE_CUC_MASK) >> 8);
++    ru_command(s, (cmd & IE_RUC_MASK) >> 4);
++
++    /*
++     * Status before the command word: a driver that polls the command word
++     * and then reads the status must never see a stale one.
++     */
++    publish_status(s);
++    wr16(s, s->scb + IE_SCB_CMD, 0);
++}
++
++/* ---- migration --------------------------------------------------------- */
++
++const VMStateDescription vmstate_i82586 = {
++    .name = "i82586",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (VMStateField[]) {
++        VMSTATE_BOOL(initialised, I82586State),
++        VMSTATE_UINT32(scb, I82586State),
++        VMSTATE_UINT32(cb_base, I82586State),
++        VMSTATE_UINT16(flags, I82586State),
++        VMSTATE_UINT8(cu_state, I82586State),
++        VMSTATE_UINT8(ru_state, I82586State),
++        VMSTATE_UINT16(rfd, I82586State),
++        VMSTATE_UINT16(rbd, I82586State),
++        VMSTATE_UINT8_ARRAY(config, I82586State, 12),
++        VMSTATE_UINT8_ARRAY(ia, I82586State, 6),
++        VMSTATE_UINT32(n_mcast, I82586State),
++        VMSTATE_END_OF_LIST()
++    }
++};
+diff -urN qemu-src.orig/hw/net/i82586.h qemu-src/hw/net/i82586.h
+--- qemu-src.orig/hw/net/i82586.h	1970-01-01 01:00:00.000000000 +0100
++++ qemu-src/hw/net/i82586.h	2026-08-01 07:17:05.604517698 +0200
+@@ -0,0 +1,63 @@
++/*
++ * Intel 82586 Ethernet controller, the original 16-bit part.
++ *
++ * Written for the Wish82586 project so that an unmodified vintage driver -
++ * NetBSD's ai(4) on top of sys/dev/ic/i82586.c - can be run against it, and
++ * later against the Verilated RTL that replaces this model.
++ *
++ * The chip is deliberately kept behind a narrow interface: it owns a window
++ * of memory, and the only things the card wrapper does to it are reset it,
++ * poke channel attention, and hand it received frames.  That is the whole
++ * host interface of the real part, and it is what the RTL presents too.
++ *
++ * This work is licensed under the GNU GPL license version 2 or later.
++ */
++
++#ifndef HW_NET_I82586_H
++#define HW_NET_I82586_H
++
++#include "net/net.h"
++#include "hw/irq.h"
++
++#define I82586_MAX_MCAST 64
++
++typedef struct I82586State {
++    /*
++     * The shared memory window.  The chip sees a 16 MB address space with
++     * this window at the very top, which is how the StarLAN 10 wires it and
++     * why the driver computes its SCP address as `size + 0xfffff4 - 2^24'.
++     */
++    uint8_t *mem;
++    uint32_t mem_size;
++    uint32_t mem_base;          /* chip address of mem[0] */
++
++    qemu_irq irq;
++    NICState *nic;
++    NICConf conf;
++
++    /* Set by the first channel attention after reset. */
++    bool initialised;
++    uint32_t scb;               /* window offset of the SCB */
++    uint32_t cb_base;           /* window offset the 16-bit offsets are from */
++
++    uint16_t flags;             /* CX FR CNA RNR, in bits 15..12 */
++    uint8_t cu_state;
++    uint8_t ru_state;
++
++    uint16_t rfd;               /* current receive frame descriptor */
++    uint16_t rbd;               /* current receive buffer descriptor */
++
++    uint8_t config[12];
++    uint8_t ia[6];
++    uint8_t mcast[I82586_MAX_MCAST][6];
++    uint32_t n_mcast;
++} I82586State;
++
++void i82586_reset(I82586State *s);
++void i82586_channel_attention(I82586State *s);
++bool i82586_can_receive(I82586State *s);
++ssize_t i82586_receive(I82586State *s, const uint8_t *buf, size_t size);
++
++extern const VMStateDescription vmstate_i82586;
++
++#endif /* HW_NET_I82586_H */
+diff -urN qemu-src.orig/hw/net/meson.build qemu-src/hw/net/meson.build
+--- qemu-src.orig/hw/net/meson.build	2025-12-06 14:17:12.000000000 +0100
++++ qemu-src/hw/net/meson.build	2026-08-01 07:44:58.601299229 +0200
+@@ -18,6 +18,7 @@
+ softmmu_ss.add(when: 'CONFIG_SMC91C111', if_true: files('smc91c111.c'))
+ softmmu_ss.add(when: 'CONFIG_LAN9118', if_true: files('lan9118.c'))
+ softmmu_ss.add(when: 'CONFIG_NE2000_ISA', if_true: files('ne2000-isa.c'))
++softmmu_ss.add(when: 'CONFIG_STARLAN10', if_true: files('starlan10.c', 'elink507.c', 'i82586.c'))
+ softmmu_ss.add(when: 'CONFIG_OPENCORES_ETH', if_true: files('opencores_eth.c'))
+ softmmu_ss.add(when: 'CONFIG_XGMAC', if_true: files('xgmac.c'))
+ softmmu_ss.add(when: 'CONFIG_MIPSNET', if_true: files('mipsnet.c'))
+diff -urN qemu-src.orig/hw/net/starlan10.c qemu-src/hw/net/starlan10.c
+--- qemu-src.orig/hw/net/starlan10.c	1970-01-01 01:00:00.000000000 +0100
++++ qemu-src/hw/net/starlan10.c	2026-08-01 08:55:40.335778912 +0200
+@@ -0,0 +1,233 @@
++/*
++ * AT&T StarLAN 10 ISA Ethernet card.
++ *
++ * Written for the Wish82586 project.  The card is an 82586 with a window of
++ * shared RAM and four bytes of I/O space, which is the smallest host interface
++ * any 82586 board has, and the closest to what the Wish82586 RTL presents:
++ * memory on its Wishbone master, RESET and CA in its control registers.
++ *
++ * NetBSD drives this board with ai(4), which sits directly on the shared
++ * sys/dev/ic/i82586.c core, so what attaches here is the same driver code the
++ * RTL's testbench has been modelled against all along.
++ *
++ * The layout is from NetBSD's sys/dev/isa/if_aireg.h:
++ *
++ *   I/O + 0   any write resets the 82586
++ *   I/O + 1   any write is a channel attention
++ *   I/O + 6   board type in the low nibble, revision in the high
++ *   I/O + 7   attribute bits
++ *
++ * The chip sees a 16 MB address space with the RAM window at the very top,
++ * which is how ai_attach() computes every pointer it hands the chip.
++ *
++ * This work is licensed under the GNU GPL license version 2 or later.
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "qemu/units.h"
++#include "exec/address-spaces.h"
++#include "hw/isa/isa.h"
++#include "hw/qdev-properties.h"
++#include "migration/vmstate.h"
++#include "net/net.h"
++#include "qom/object.h"
++#include "sysemu/sysemu.h"
++#include "i82586.h"
++
++#define TYPE_ISA_STARLAN10 "isa-starlan10"
++OBJECT_DECLARE_SIMPLE_TYPE(ISAStarlan10State, ISA_STARLAN10)
++
++#define AI_IOSIZE       16
++#define AI_RESET        0
++#define AI_ATTN         1
++#define AI_REVISION     6
++#define AI_ATTRIB       7
++
++#define SL10_BOARD      1       /* ai_names[] is indexed by this minus one */
++#define SL_ATTR_WIDTH   0x04    /* set: 16-bit card bus */
++
++struct ISAStarlan10State {
++    ISADevice parent_obj;
++
++    uint32_t iobase;
++    uint32_t isairq;
++    uint32_t iomem;
++    uint32_t memsize;
++    uint32_t revision;
++
++    MemoryRegion io;
++    MemoryRegion ram;
++
++    I82586State i82586;
++};
++
++static uint64_t starlan10_io_read(void *opaque, hwaddr addr, unsigned size)
++{
++    ISAStarlan10State *s = opaque;
++
++    switch (addr) {
++    case AI_REVISION:
++        return ((s->revision & 0x0f) << 4) | SL10_BOARD;
++    case AI_ATTRIB:
++        return SL_ATTR_WIDTH;
++    default:
++        /* Nothing drives the bus here; an ISA read floats to all ones. */
++        return 0xff;
++    }
++}
++
++static void starlan10_io_write(void *opaque, hwaddr addr, uint64_t val,
++                               unsigned size)
++{
++    ISAStarlan10State *s = opaque;
++
++    switch (addr) {
++    case AI_RESET:
++        i82586_reset(&s->i82586);
++        break;
++    case AI_ATTN:
++        i82586_channel_attention(&s->i82586);
++        break;
++    default:
++        break;
++    }
++}
++
++static const MemoryRegionOps starlan10_io_ops = {
++    .read = starlan10_io_read,
++    .write = starlan10_io_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .impl = {
++        .min_access_size = 1,
++        .max_access_size = 1,
++    },
++};
++
++static bool starlan10_can_receive(NetClientState *nc)
++{
++    ISAStarlan10State *s = qemu_get_nic_opaque(nc);
++
++    return i82586_can_receive(&s->i82586);
++}
++
++static ssize_t starlan10_receive(NetClientState *nc, const uint8_t *buf,
++                                 size_t size)
++{
++    ISAStarlan10State *s = qemu_get_nic_opaque(nc);
++
++    return i82586_receive(&s->i82586, buf, size);
++}
++
++static NetClientInfo net_starlan10_info = {
++    .type = NET_CLIENT_DRIVER_NIC,
++    .size = sizeof(NICState),
++    .can_receive = starlan10_can_receive,
++    .receive = starlan10_receive,
++};
++
++static void starlan10_reset(DeviceState *dev)
++{
++    ISAStarlan10State *s = ISA_STARLAN10(dev);
++
++    i82586_reset(&s->i82586);
++}
++
++static void starlan10_realize(DeviceState *dev, Error **errp)
++{
++    ISADevice *isadev = ISA_DEVICE(dev);
++    ISAStarlan10State *s = ISA_STARLAN10(dev);
++
++    /*
++     * ai_find_mem_size() probes 64K, 48K, 32K and 16K windows, so the size is
++     * a property; anything else and the driver will simply not find the card.
++     */
++    if (s->memsize != 16 * KiB && s->memsize != 32 * KiB &&
++        s->memsize != 48 * KiB && s->memsize != 64 * KiB) {
++        error_setg(errp, "memsize must be 16384, 32768, 49152 or 65536");
++        return;
++    }
++
++    memory_region_init_io(&s->io, OBJECT(dev), &starlan10_io_ops, s,
++                          "starlan10.io", AI_IOSIZE);
++    isa_register_ioport(isadev, &s->io, s->iobase);
++
++    memory_region_init_ram(&s->ram, OBJECT(dev), "starlan10.ram", s->memsize,
++                           &error_fatal);
++    /*
++     * The window goes into the system address space rather than the ISA one,
++     * over the top of whatever else claims the range.  On the pc machine the
++     * chipset's PAM registers decide whether 0xc0000-0xfffff is DRAM or the
++     * bus, and SeaBIOS shadows the whole of it as read-only DRAM before the
++     * guest OS runs; an ISA card's memory window would simply not be there.
++     * A machine whose BIOS left the range to the bus - which is what a period
++     * PC with this card installed would have been set up to do - behaves the
++     * way this does.
++     */
++    memory_region_add_subregion_overlap(get_system_memory(), s->iomem,
++                                        &s->ram, 2);
++
++    s->i82586.mem = memory_region_get_ram_ptr(&s->ram);
++    s->i82586.mem_size = s->memsize;
++    s->i82586.mem_base = (1 << 24) - s->memsize;
++    s->i82586.irq = isa_get_irq(isadev, s->isairq);
++
++    qemu_macaddr_default_if_unset(&s->i82586.conf.macaddr);
++    memcpy(s->i82586.ia, s->i82586.conf.macaddr.a, 6);
++
++    i82586_reset(&s->i82586);
++
++    s->i82586.nic = qemu_new_nic(&net_starlan10_info, &s->i82586.conf,
++                                 object_get_typename(OBJECT(dev)), dev->id,
++                                 &dev->mem_reentrancy_guard, s);
++    qemu_format_nic_info_str(qemu_get_queue(s->i82586.nic),
++                             s->i82586.conf.macaddr.a);
++}
++
++static const VMStateDescription vmstate_starlan10 = {
++    .name = "starlan10",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (VMStateField[]) {
++        VMSTATE_STRUCT(i82586, ISAStarlan10State, 0, vmstate_i82586,
++                       I82586State),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static Property starlan10_properties[] = {
++    DEFINE_PROP_UINT32("iobase", ISAStarlan10State, iobase, 0x360),
++    DEFINE_PROP_UINT32("irq", ISAStarlan10State, isairq, 7),
++    DEFINE_PROP_UINT32("iomem", ISAStarlan10State, iomem, 0xd0000),
++    DEFINE_PROP_UINT32("memsize", ISAStarlan10State, memsize, 64 * KiB),
++    DEFINE_PROP_UINT32("revision", ISAStarlan10State, revision, 1),
++    DEFINE_NIC_PROPERTIES(ISAStarlan10State, i82586.conf),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void starlan10_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->realize = starlan10_realize;
++    dc->reset = starlan10_reset;
++    dc->desc = "AT&T StarLAN 10 (Intel 82586)";
++    dc->vmsd = &vmstate_starlan10;
++    device_class_set_props(dc, starlan10_properties);
++    set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
++}
++
++static const TypeInfo starlan10_info = {
++    .name          = TYPE_ISA_STARLAN10,
++    .parent        = TYPE_ISA_DEVICE,
++    .instance_size = sizeof(ISAStarlan10State),
++    .class_init    = starlan10_class_init,
++};
++
++static void starlan10_register_types(void)
++{
++    type_register_static(&starlan10_info);
++}
++
++type_init(starlan10_register_types)
+Binary files qemu-src.orig/scripts/qapi/__pycache__/__init__.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/__init__.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/commands.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/commands.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/common.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/common.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/error.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/error.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/events.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/events.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/expr.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/expr.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/gen.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/gen.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/introspect.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/introspect.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/main.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/main.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/parser.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/parser.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/schema.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/schema.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/source.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/source.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/types.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/types.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/qapi/__pycache__/visit.cpython-311.pyc and qemu-src/scripts/qapi/__pycache__/visit.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/__pycache__/__init__.cpython-311.pyc and qemu-src/scripts/tracetool/__pycache__/__init__.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/__pycache__/transform.cpython-311.pyc and qemu-src/scripts/tracetool/__pycache__/transform.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/__pycache__/vcpu.cpython-311.pyc and qemu-src/scripts/tracetool/__pycache__/vcpu.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/backend/__pycache__/__init__.cpython-311.pyc and qemu-src/scripts/tracetool/backend/__pycache__/__init__.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/backend/__pycache__/dtrace.cpython-311.pyc and qemu-src/scripts/tracetool/backend/__pycache__/dtrace.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/backend/__pycache__/log.cpython-311.pyc and qemu-src/scripts/tracetool/backend/__pycache__/log.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/format/__pycache__/__init__.cpython-311.pyc and qemu-src/scripts/tracetool/format/__pycache__/__init__.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/format/__pycache__/c.cpython-311.pyc and qemu-src/scripts/tracetool/format/__pycache__/c.cpython-311.pyc differ
+Binary files qemu-src.orig/scripts/tracetool/format/__pycache__/h.cpython-311.pyc and qemu-src/scripts/tracetool/format/__pycache__/h.cpython-311.pyc differ

@@ -27,7 +27,13 @@ cosim/scripts/build-qemu.sh      # i386 only, into work/qemu-install
 cosim/scripts/fetch-netbsd.sh    # the serial console install ISO
 cosim/scripts/make-image.py      # drive sysinst over serial into a disk image
 cosim/scripts/boot-netbsd.sh     # boot what came out
+cosim/scripts/run-cosim.py       # boot with the card and check it passes traffic
 ```
+
+`run-cosim.py` is the one that says whether anything works.  It logs in, brings
+the interface up, pings through the emulated network, and fails if the driver
+did not attach, if a ping was lost, or if the interface counted any error.  It
+runs on a snapshot of the disk image unless given `--keep`.
 
 ## Regenerating a patch
 
