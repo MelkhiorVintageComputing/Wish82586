@@ -82,7 +82,9 @@ wiring itself so a test can also reach the core's pins directly.
 `wish82586.sv` also holds a `_unused` sink that keeps the linter quiet -
 shrink it as signals get consumed.
 
-Working blocks: `wb_csr` (control registers), `ie_core` (initialisation
+Working blocks: `wb_csr` (control registers), `wb_csr_sun2` (the Sun-2's
+register block in its place, as a worked example of the split), `ie_core`
+(initialisation
 sequencer and SCB handler), `ie_cu` (command unit, including TRANSMIT),
 `ie_ru` (receive unit), `mii_rx` and `mii_tx` (the two MII ends), `wb_master`
 (24-bit 8/16-bit accesses onto the 32-bit Wishbone port), `wb_arb` (three-way

@@ -63,6 +63,26 @@ module tb_top #(
     input  logic        dut_mii_crs,
     input  logic        dut_mii_col,
 
+    // ---- unit test: the Sun-2 control register ----------------------------
+    input  logic        sun2_wbs_cyc_i,
+    input  logic        sun2_wbs_stb_i,
+    input  logic        sun2_wbs_we_i,
+    input  logic [3:0]  sun2_wbs_sel_i,
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  logic [31:0] sun2_wbs_adr_i,   // only [5:0] reach the module
+    /* verilator lint_on UNUSEDSIGNAL */
+    input  logic [31:0] sun2_wbs_dat_i,
+    output logic [31:0] sun2_wbs_dat_o,
+    output logic        sun2_wbs_ack_o,
+    output logic        sun2_wbs_err_o,
+    input  logic        sun2_int_i,
+    input  logic        sun2_bus_err_i,
+    output logic        sun2_core_rst_o,
+    output logic        sun2_ca_o,
+    output logic [31:0] sun2_scp_addr_o,
+    output logic        sun2_loopback_o,
+    output logic        sun2_irq_o,
+
     // ---- unit test: nibble-wide CRC ---------------------------------------
     input  logic        crc4_init,
     input  logic        crc4_en,
@@ -203,6 +223,29 @@ module tb_top #(
       .mii_rx_er  (dut_mii_rx_er),
       .mii_crs    (dut_mii_crs),
       .mii_col    (dut_mii_col)
+  );
+
+  // Not wired to the MAC: this is the Sun-2's register block standing beside
+  // wb_csr, driven straight from a test.  See doc/sun2_ethernet.pdf.
+  wb_csr_sun2 u_sun2 (
+      .clk        (clk),
+      .rst        (rst),
+      .wbs_cyc_i  (sun2_wbs_cyc_i),
+      .wbs_stb_i  (sun2_wbs_stb_i),
+      .wbs_we_i   (sun2_wbs_we_i),
+      .wbs_sel_i  (sun2_wbs_sel_i),
+      .wbs_adr_i  (sun2_wbs_adr_i[5:0]),
+      .wbs_dat_i  (sun2_wbs_dat_i),
+      .wbs_dat_o  (sun2_wbs_dat_o),
+      .wbs_ack_o  (sun2_wbs_ack_o),
+      .wbs_err_o  (sun2_wbs_err_o),
+      .core_rst_o (sun2_core_rst_o),
+      .ca_o       (sun2_ca_o),
+      .scp_addr_o (sun2_scp_addr_o),
+      .int_i      (sun2_int_i),
+      .bus_err_i  (sun2_bus_err_i),
+      .loopback_o (sun2_loopback_o),
+      .irq_o      (sun2_irq_o)
   );
 
   crc32_eth #(.DATA_W(4)) u_crc4 (

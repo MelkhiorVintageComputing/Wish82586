@@ -46,6 +46,7 @@ RTL       := $(RTL_DIR)/wish82586_pkg.sv \
              $(RTL_DIR)/mii_tx.sv \
              $(RTL_DIR)/dp_ram.sv \
              $(RTL_DIR)/wb_csr.sv \
+             $(RTL_DIR)/wb_csr_sun2.sv \
              $(RTL_DIR)/wb_mdio.sv \
              $(RTL_DIR)/mdio_prog.sv \
              $(RTL_DIR)/wb_master.sv \
@@ -103,7 +104,7 @@ lint-icarus:
 	$(IVERILOG) -g2012 -t null -o /dev/null $(RTL) $(TB_SV)
 
 synth:
-	@for top in wish82586_wb wish82586 crc32_eth sync_fifo async_fifo mii_rx mii_tx dp_ram wb_csr wb_mdio mdio_prog wb_master wb_arb ie_core ie_cu ie_ru; do \
+	@for top in wish82586_wb wish82586 crc32_eth sync_fifo async_fifo mii_rx mii_tx dp_ram wb_csr wb_csr_sun2 wb_mdio mdio_prog wb_master wb_arb ie_core ie_cu ie_ru; do \
 	  printf '%-12s ' "$$top"; \
 	  $(YOSYS) -q -p "read_verilog -sv $(RTL); hierarchy -check -top $$top; proc; opt" \
 	    && echo "elaborates" || exit 1; \

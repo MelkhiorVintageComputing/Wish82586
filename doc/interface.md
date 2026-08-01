@@ -18,11 +18,13 @@ a bus error bit that inhibits the channel until reset clears it.
 |-----------------|---------------------------------------------------------|
 | `wish82586`     | the MAC.  Host side is RESET, CA, INT and the SCP address as pins, plus the Wishbone master |
 | `wb_csr`        | the register block this document defines, driving those pins from a Wishbone slave port |
-| `wish82586_wb`  | the two wired together - the default, and what `tb/` and `cosim/` drive |
+| `wb_csr_sun2`   | the Sun-2's register block instead, for recreating that machine |
+| `wish82586_wb`  | `wb_csr` and the MAC wired together - the default, and what `tb/` and `cosim/` drive |
 
 Recreating a machine means writing its register block and instantiating
 `wish82586` beside it instead of using `wish82586_wb`.  Nothing in the MAC has
-to change for that, which is the point of the split.
+to change for that, which is the point of the split.  `wb_csr_sun2` is the
+worked example; see below.
 
 ### The core's host pins
 
@@ -88,6 +90,56 @@ data, byte selects honoured.
   moved anywhere for an FPGA SoC.
 
 Unmapped addresses read as zero and swallow writes.
+
+## The Sun-2 control register - `wb_csr_sun2`
+
+What the same three pins looked like on a machine that shipped, from
+`doc/sun2_ethernet.pdf` and `doc/drivers/Sun2120_ROM/if_obie.h`, which agree
+bit for bit.  One byte at word offset 0, byte lane 0:
+
+| bit | name     | access | contents                                       |
+|-----|----------|--------|------------------------------------------------|
+| 7   | `RESET*` | rw     | 0 resets the 82586 (`obie_noreset`)            |
+| 6   | `LOOPB*` | rw     | 0 selects transceiver loopback (`obie_noloop`) |
+| 5   | `CA`     | rw     | channel attention (`obie_ca`)                  |
+| 4   | `INTEN`  | rw     | interrupt enable (`obie_ie`)                   |
+| 3   |          | ro     | unused                                          |
+| 2   |          | ro     | transceiver level; not modelled, reads 0        |
+| 1   | `ERR`    | ro     | the DMA took a bus error (`obie_buserr`)        |
+| 0   | `INT`    | ro     | the 82586 wants service (`obie_intr`)           |
+
+Nothing here matches `wb_csr`: different bit positions, both level signals
+active low, and a bus error bit.  The byte is cleared by reset, so the chip
+comes up held in reset *and* in loopback and the driver has to let it out -
+`*obie = obie_reset` then `obie->obie_noreset = 1` in `if_ie.c`.
+
+Three things are not obvious from the register map:
+
+* **CA is a level, not a write-1-to-pulse bit.**  `ieca()` writes it set and
+  then clear.  The 82586 latches channel attention on the rising edge of the
+  pin, so that is what the module generates: one `ca_i` cycle per 0 -> 1
+  transition.  Written set twice without being cleared in between, it is one
+  channel attention, as on the hardware.
+* **`ERR` can only be cleared by asserting `RESET*`.**  The manual says so and
+  `if_obie.h` says the driver must poll for it.  It is latched from the core's
+  `bus_err_o`.
+* **`LOOPB*` is not the MAC's.**  On the Sun-2 it isolates the transceiver,
+  which is why the driver stays in loopback across initialisation - "the chip
+  does random things if its 'wire' is active between the time it's reset and
+  the first CA".  The module carries the bit and brings it out as
+  `loopback_o` for the system to wire to its PHY; the MAC never sees it.  It
+  is not the 82586's own internal loopback, which is a CONFIGURE bit and works
+  already.
+
+The SCP address is a parameter, not a register: the real part has it wired to
+`0xFFFFF6` and the Sun-2 has no way to move it.  The ROM driver instead
+re-maps the page at `0xFFFFF6` onto its own memory for as long as the chip
+needs to read the SCP, and puts the mapping back afterwards.
+
+This is the register block and nothing else.  A working Sun-2 also needs the
+byte swap that machine had between the CPU and the shared memory - see
+`doc/drivers/NetBSD/README.md` - and whatever plays the part of its MMU.  Those
+are the system's, not the MAC's.
 
 ## Wishbone B4 classic master - shared memory
 

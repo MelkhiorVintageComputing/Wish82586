@@ -112,6 +112,19 @@ void Env::bind_models() {
   prog_phy_[1].reset(new MdioPhy(*sim_, sysclk_, pp1, 1));
   prog_phy_[2].reset(new MdioPhy(*sim_, sysclk_, pp2, 1));
 
+  // The Sun-2 control register block; see doc/sun2_ethernet.pdf.
+  WbMasterPorts mp3;
+  mp3.cyc = &d->sun2_wbs_cyc_i;
+  mp3.stb = &d->sun2_wbs_stb_i;
+  mp3.we = &d->sun2_wbs_we_i;
+  mp3.sel = &d->sun2_wbs_sel_i;
+  mp3.adr = &d->sun2_wbs_adr_i;
+  mp3.dat_w = &d->sun2_wbs_dat_i;
+  mp3.dat_r = &d->sun2_wbs_dat_o;
+  mp3.ack = &d->sun2_wbs_ack_o;
+  mp3.err = &d->sun2_wbs_err_o;
+  sun2_host_.reset(new WbHost(*sim_, sysclk_, mp3));
+
   img_.reset(new ie::MemImage(*mem_, cfg_.cbbase, cfg_.scp_addr));
   drv_.reset(new IeDriver(*sim_, *host_, *img_));
 
@@ -120,6 +133,8 @@ void Env::bind_models() {
   // wants to drive the core without the register block raises them itself.
   d->dut_core_rst_i = 0;
   d->dut_ca_i = 0;
+  d->sun2_int_i = 0;
+  d->sun2_bus_err_i = 0;
   sim_->eval();
 }
 

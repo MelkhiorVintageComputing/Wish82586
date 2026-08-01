@@ -63,6 +63,8 @@ class Env {
   ie::MemImage& img() { return *img_; }
   // The MDIO station a test drives directly, and the PHY listening to it.
   WbHost& mdio_host() { return *mdio_host_; }
+  // The Sun-2 control register block, driven straight from a test.
+  WbHost& sun2_host() { return *sun2_host_; }
   MdioPhy& mdio_phy() { return *mdio_phy_; }
   // The PHY on the far side of programmed pair i (0 gigabit full, 1 100
   // full, 2 ten half).
@@ -93,6 +95,7 @@ class Env {
   std::unique_ptr<ie::MemImage> img_;
   std::unique_ptr<IeDriver> drv_;
   std::unique_ptr<WbHost> mdio_host_;
+  std::unique_ptr<WbHost> sun2_host_;
   std::unique_ptr<MdioPhy> mdio_phy_;
   std::unique_ptr<MdioPhy> prog_phy_[3];
 };
