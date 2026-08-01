@@ -170,7 +170,6 @@ WishRtl *wish_rtl_new(uint8_t *mem, uint32_t mem_size, uint32_t mem_base)
     r->scp_addr = mem_base + mem_size - 10;
 
     d->rst = 1;
-    d->mdio_i = 0;
     r->sim->eval();
     wish_rtl_reset(r);
     return r;

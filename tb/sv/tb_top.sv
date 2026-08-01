@@ -50,11 +50,6 @@ module tb_top #(
     input  logic        dut_mii_crs,
     input  logic        dut_mii_col,
 
-    output logic        dut_mdc,
-    output logic        dut_mdio_o,
-    output logic        dut_mdio_oe,
-    input  logic        dut_mdio_i,
-
     // ---- unit test: nibble-wide CRC ---------------------------------------
     input  logic        crc4_init,
     input  logic        crc4_en,
@@ -170,11 +165,7 @@ module tb_top #(
       .mii_rx_dv  (dut_mii_rx_dv),
       .mii_rx_er  (dut_mii_rx_er),
       .mii_crs    (dut_mii_crs),
-      .mii_col    (dut_mii_col),
-      .mdc        (dut_mdc),
-      .mdio_o     (dut_mdio_o),
-      .mdio_oe    (dut_mdio_oe),
-      .mdio_i     (dut_mdio_i)
+      .mii_col    (dut_mii_col)
   );
 
   crc32_eth #(.DATA_W(4)) u_crc4 (

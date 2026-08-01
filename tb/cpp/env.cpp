@@ -116,7 +116,6 @@ void Env::bind_models() {
   drv_.reset(new IeDriver(*sim_, *host_, *img_));
 
   d->rst = 1;
-  d->dut_mdio_i = 0;
   sim_->eval();
 }
 

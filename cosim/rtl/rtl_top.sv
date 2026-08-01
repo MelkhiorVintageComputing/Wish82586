@@ -48,12 +48,7 @@ module rtl_top #(
     input  logic        mii_rx_dv,
     input  logic        mii_rx_er,
     input  logic        mii_crs,
-    input  logic        mii_col,
-
-    output logic        mdc,
-    output logic        mdio_o,
-    output logic        mdio_oe,
-    input  logic        mdio_i
+    input  logic        mii_col
 );
 
   wish82586 #(.PHY_DATA_W(PHY_DATA_W)) u_dut (
@@ -87,11 +82,7 @@ module rtl_top #(
       .mii_rx_dv  (mii_rx_dv),
       .mii_rx_er  (mii_rx_er),
       .mii_crs    (mii_crs),
-      .mii_col    (mii_col),
-      .mdc        (mdc),
-      .mdio_o     (mdio_o),
-      .mdio_oe    (mdio_oe),
-      .mdio_i     (mdio_i)
+      .mii_col    (mii_col)
   );
 
 endmodule

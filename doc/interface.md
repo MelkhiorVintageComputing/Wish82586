@@ -144,8 +144,8 @@ the CONFIGURE command parameters.
 
 PHY management is a separate pair of blocks rather than part of the MAC,
 because it is not the MAC's business: the 82586 predates MDIO and none of the
-drivers in `doc/drivers` knows a PHY exists.  The MAC's own `mdc` / `mdio_*`
-pins are left undriven; these are what a system should wire to the PHY.
+drivers in `doc/drivers` knows a PHY exists.  `wish82586` has no MDIO pins at
+all; these two are what a system wires to the PHY, alongside the MAC.
 
 `wb_mdio` is a Wishbone slave that runs the clause 22 serial bus.  Registers,
 byte offsets, so the word address is the offset over four:

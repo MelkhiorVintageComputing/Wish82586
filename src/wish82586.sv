@@ -4,11 +4,15 @@
 //
 //   host side : Wishbone B4 classic slave  (CSR: reset, channel attention, ...)
 //               Wishbone B4 classic master (DMA into the shared host memory)
-//   PHY side  : MII (GMII to follow)
+//   PHY side  : MII or GMII
 //
-// Status: the CSR block is functional; the command unit, receive unit and MAC
-// datapath are not implemented yet.  The instantiation points below are the
-// contract the testbench in tb/ already drives - see doc/interface.md.
+// PHY management is not here: the 82586 predates MDIO and no driver expects
+// it, so wb_mdio and mdio_prog do that job beside the MAC rather than inside
+// it.  See doc/interface.md.
+//
+// What is left is the diagnostic commands; everything else - initialisation,
+// the SCB, both units and both directions of the datapath - works.  The
+// contract the testbench in tb/ drives is in doc/interface.md.
 
 module wish82586 #(
     // 4 selects MII, 8 selects GMII.  With GMII the transmit clock is sourced
@@ -56,13 +60,7 @@ module wish82586 #(
     input  logic                   mii_rx_dv,
     input  logic                   mii_rx_er,
     input  logic                   mii_crs,
-    input  logic                   mii_col,
-
-    // ---- PHY management (not driven yet) ----------------------------------
-    output logic                   mdc,
-    output logic                   mdio_o,
-    output logic                   mdio_oe,
-    input  logic                   mdio_i
+    input  logic                   mii_col
 );
 
   // ---------------------------------------------------------------------------
@@ -72,7 +70,7 @@ module wish82586 #(
   logic        ca;
   logic [31:0] scp_addr;
 
-  // Driven by the command / receive units once they exist.
+  // What the two units report back to the host through CSR STATUS.
   logic [2:0]  cus;
   logic [2:0]  rus;
   logic        busy;
@@ -103,10 +101,11 @@ module wish82586 #(
   // ---------------------------------------------------------------------------
   // Initialisation sequencer and SCB handler, and the memory port it drives.
   //
-  // TODO: command unit, receive unit, transmit/receive MAC datapath, and an
-  // arbiter in front of wb_master once more than one block wants the bus.
+  // wb_arb shares that one port between the SCB handler, the receive unit and
+  // the command unit, in that priority order: the receive unit comes before
+  // the command unit because it cannot ask the wire to wait.
   // ---------------------------------------------------------------------------
-  // Memory port, shared by the SCB handler and the command unit.
+  // Memory port, shared by all three.
   logic        bus_req, bus_we, bus_ack, bus_err;
   logic [1:0]  bus_size;
   logic [3:0]  bus_sel;
@@ -451,15 +450,12 @@ module wish82586 #(
       .col           (mii_col)
   );
 
-  assign mdc       = 1'b0;
-  assign mdio_o    = 1'b0;
-  assign mdio_oe   = 1'b0;
-
-  // Signals consumed once the datapath exists; keep the linter quiet for now.
-  // ia_addr and cfg_bytes are already captured from the IA-SETUP and CONFIGURE
-  // commands and are waiting for the transmit and receive paths to use them.
+  // Only some of cfg_bytes is sliced out above - the rest of the CONFIGURE
+  // block is captured but has no consumer - and the three counters exist to be
+  // looked at in a waveform.  Keep the linter quiet about them; shrink this
+  // rather than widen it.
   // verilator lint_off UNUSED
-  wire _unused = &{1'b0, mdio_i, cfg_bytes, rx_active, rx_bytes, lb_level};
+  wire _unused = &{1'b0, cfg_bytes, rx_active, rx_bytes, lb_level};
   // verilator lint_on UNUSED
 
 endmodule
