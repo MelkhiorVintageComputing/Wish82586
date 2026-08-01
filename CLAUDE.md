@@ -195,6 +195,19 @@ fail, and is reported as PENDING; when it starts passing the runner says XPASS
 and the marker comes off.  The pending list is the project todo list - prefer
 adding a pending test for missing behaviour over leaving it untested.
 
+### Co-simulation (`cosim/`)
+
+The regression checks the MAC against a model of what the drivers do;
+`cosim/` checks it against the drivers themselves.  QEMU 7.2 gets an ISA card
+carrying either a software 82586 or the Verilated `wish82586`, and an
+unmodified NetBSD 10.1 attaches its own `ef(4)` to it and passes traffic.
+`doc/cosimulation.md` is the whole story; `cosim/README.md` is how to run it.
+
+It is a separate, much slower loop and is deliberately not part of `make
+test`.  Nothing in `src/` or `tb/` may grow a dependency on it - the traffic
+goes the other way: `cosim/rtl/` reuses `tb/cpp`'s bus and PHY models, which
+is why `WbMem` has a constructor taking storage it does not own.
+
 Tests self register; adding a file in `tb/cpp/tests/` is enough, the Makefile
 globs it.  Checks are `CHECK`, `CHECK_MSG`, `CHECK_EQ`, `CHECK_NE` and
 `CHECK_DRV` (reports the driver model's own error message).

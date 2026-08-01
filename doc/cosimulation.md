@@ -12,11 +12,14 @@ Nothing here is built by `make test`; it is a separate, much slower loop.
 
 ```
 QEMU i386 machine                       this repository
-  NetBSD/i386, unmodified               cosim/patches/       QEMU device model
-    ef(4) driver                        cosim/scripts/       build, image, run
-      |  ISA I/O ports and shared RAM
+  NetBSD/i386, unmodified               cosim/patches/   the card, in QEMU
+    ef(4) driver                        cosim/rtl/       the core, in a library
+      |  ISA I/O ports and shared RAM   cosim/scripts/   build, image, run
       v
-  emulated 3C507 card  <------------>  Verilated wish82586
+  emulated 3C507 card
+      |  reset, channel attention, a frame off the wire
+      v
+  Verilated wish82586, sharing the card's memory window by pointer
 ```
 
 Any 82586 ISA card would do, as long as its NetBSD driver sits on
@@ -194,9 +197,10 @@ its own - see the note at the top of `cosim/scripts/`.
 3. Replace that software model with the Verilated `wish82586`, and check that
    `ef(4)` still attaches, sees its address, and passes packets.
 
-Steps 1 and 2 are done.  `cosim/scripts/` builds QEMU 7.2.22 from source with
-the card patched in, installs NetBSD 10.1/i386 over the network into
-`work/images/`, and `run-cosim.py` boots it and checks the result:
+All three are done.  `cosim/scripts/` builds QEMU 7.2.22 from source with the
+card patched in, installs NetBSD 10.1/i386 over the network into
+`work/images/`, and `run-cosim.py` boots it and checks the result - with
+`--rtl`, against the RTL:
 
 ```
 ef0 at isa0 port 0x360-0x36f iomem 0xd0000-0xdffff irq 7
@@ -211,7 +215,44 @@ That is an unmodified NetBSD driver initialising the chip, configuring it,
 setting its address, starting the receive unit, transmitting ARP and ICMP and
 receiving the replies, with no errors counted on either side.
 
-Two things learned along the way that are worth keeping:
+## How the RTL gets into the loop
+
+`cosim/rtl/` builds the Verilated core into a shared library with a handful of
+C entry points, and the card in QEMU loads it by path:
+
+```sh
+make -C cosim/rtl              # work/lib/libwish82586rtl.so
+make -C cosim/rtl check        # drive it the way the driver does, no QEMU
+cosim/scripts/run-cosim.py --rtl
+```
+
+Nothing about Verilator or C++ reaches QEMU: `hw/net/i82586_rtl.c` is fifty
+lines of `dlopen` and four forwarding calls, which are the same four the
+software model implements.  What crosses the boundary is the memory window,
+shared by pointer, so the guest's writes and the core's Wishbone master really
+are the same buffer - no copying, and nothing to keep in step.
+
+Inside the library it is the regression's own models doing their usual jobs:
+`WbMem` over that window, `WbHost` on the control registers turning the card's
+two I/O bytes into `CTRL.RST` and `CTRL.CA`, and `MiiPhy` on the wire.
+
+The one thing that is unlike hardware is *when* the core runs.  A real card
+works alongside the host; here the simulation is stepped only when the guest
+touches the card, and far enough that whatever it was asked to do is finished
+before the I/O write returns.  Every driver in `doc/drivers` polls the SCB or
+waits for the interrupt afterwards, so none of them can tell the difference,
+and the guest never sees a half-written structure in shared memory.  What it
+costs is visible in the ping times: about 1.5 ms round trip through the
+software model, 3 to 6 ms through the RTL.
+
+`make -C cosim/rtl check` is the thing to run first when the guest misbehaves.
+It writes the same structures at the same offsets that `ef_attach()` and
+`i82586_init()` write, using nothing but the C interface the card uses, so if
+it passes and the guest still does not work, the fault is on the QEMU side.
+
+## What was learned
+
+Three things worth keeping:
 
 * A process that is alive, writing to its log and growing its output file can
   still be going in circles.  The installer script installed NetBSD three times
@@ -222,3 +263,8 @@ Two things learned along the way that are worth keeping:
   probe asks the chip to *clear* a flag, so a memory window that reads back as
   zeros passes it perfectly while nothing at all is connected.  Every negative
   check of this shape wants a positive one next to it.
+* Writing the software 82586 first was worth it.  It is scaffolding and it is
+  now redundant, but it was what turned "the guest does not work" into a
+  question with one unknown at a time: the ISA glue, the memory mapping, the
+  interrupt path and the driver's expectations were all settled and working
+  before the RTL was asked to do anything.

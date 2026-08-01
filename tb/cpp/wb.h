@@ -67,6 +67,11 @@ class WbMem {
 
   WbMem(Sim& sim, Sim::Clock* clk, WbSlavePorts ports, size_t size_bytes,
         uint32_t base = 0);
+  // The same slave over storage somebody else owns.  The co-simulation uses
+  // it to point the core straight at the emulated card's memory window, so
+  // guest and MAC really do share one buffer.
+  WbMem(Sim& sim, Sim::Clock* clk, WbSlavePorts ports, uint8_t* data,
+        size_t size_bytes, uint32_t base);
 
   // ---- backdoor access, little endian like the 82586 sees memory ----------
   uint8_t rd8(uint32_t a) const;
@@ -82,9 +87,9 @@ class WbMem {
   void clear(uint8_t pattern = 0);
 
   uint32_t base() const { return base_; }
-  size_t size() const { return mem_.size(); }
+  size_t size() const { return size_; }
   bool contains(uint32_t a, size_t n = 1) const {
-    return a >= base_ && (uint64_t(a) + n) <= (uint64_t(base_) + mem_.size());
+    return a >= base_ && (uint64_t(a) + n) <= (uint64_t(base_) + size_);
   }
 
   // ---- configuration ------------------------------------------------------
@@ -114,9 +119,13 @@ class WbMem {
  private:
   void tick();
 
+  void attach(Sim::Clock* clk);
+
   Sim& sim_;
   WbSlavePorts p_;
-  std::vector<uint8_t> mem_;
+  std::vector<uint8_t> owned_;   // empty when the storage belongs to someone else
+  uint8_t* data_ = nullptr;
+  size_t size_ = 0;
   uint32_t base_;
   int wait_states_ = 0;
   int wait_cnt_ = 0;

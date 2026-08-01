@@ -19,6 +19,13 @@ sys/dev/ic/i82586.c core.
 
   -netdev user,id=n0 -device isa-3c507,netdev=n0
 
+hw/net/i82586_rtl.c puts the Verilated Wish82586 behind the same four calls
+instead, loaded at run time out of a shared library built from the RTL tree.
+The card's memory window is shared with it by pointer, so the guest and the
+core's Wishbone master work in one buffer.
+
+  -device isa-3c507,netdev=n0,rtl=/path/to/libwish82586rtl.so
+
 diff -urN qemu-src.orig/hw/net/Kconfig qemu-src/hw/net/Kconfig
 --- qemu-src.orig/hw/net/Kconfig	2025-12-06 14:17:12.000000000 +0100
 +++ qemu-src/hw/net/Kconfig	2026-08-01 07:19:45.992357026 +0200
@@ -36,8 +43,8 @@ diff -urN qemu-src.orig/hw/net/Kconfig qemu-src/hw/net/Kconfig
  
 diff -urN qemu-src.orig/hw/net/elink507.c qemu-src/hw/net/elink507.c
 --- qemu-src.orig/hw/net/elink507.c	1970-01-01 01:00:00.000000000 +0100
-+++ qemu-src/hw/net/elink507.c	2026-08-01 08:55:40.335778912 +0200
-@@ -0,0 +1,330 @@
++++ qemu-src/hw/net/elink507.c	2026-08-01 10:01:20.126715731 +0200
+@@ -0,0 +1,337 @@
 +/*
 + * 3Com 3C507 EtherLink 16 ISA Ethernet card.
 + *
@@ -311,6 +318,12 @@ diff -urN qemu-src.orig/hw/net/elink507.c qemu-src/hw/net/elink507.c
 +    qemu_macaddr_default_if_unset(&s->i82586.conf.macaddr);
 +    memcpy(s->i82586.ia, s->i82586.conf.macaddr.a, 6);
 +
++    /* Before the first reset: from here on the chip may be the RTL one. */
++    if (s->i82586.rtl_path &&
++        !i82586_rtl_open(&s->i82586, s->i82586.rtl_path, errp)) {
++        return;
++    }
++
 +    elink507_reset(dev);
 +
 +    s->i82586.nic = qemu_new_nic(&net_elink507_info, &s->i82586.conf,
@@ -339,6 +352,7 @@ diff -urN qemu-src.orig/hw/net/elink507.c qemu-src/hw/net/elink507.c
 +    DEFINE_PROP_UINT32("iomem", ISAElink507State, iomem, 0xd0000),
 +    DEFINE_PROP_UINT32("memsize", ISAElink507State, memsize, 64 * KiB),
 +    DEFINE_PROP_UINT32("revision", ISAElink507State, revision, 0x10),
++    DEFINE_PROP_STRING("rtl", ISAElink507State, i82586.rtl_path),
 +    DEFINE_NIC_PROPERTIES(ISAElink507State, i82586.conf),
 +    DEFINE_PROP_END_OF_LIST(),
 +};
@@ -370,8 +384,8 @@ diff -urN qemu-src.orig/hw/net/elink507.c qemu-src/hw/net/elink507.c
 +type_init(elink507_register_types)
 diff -urN qemu-src.orig/hw/net/i82586.c qemu-src/hw/net/i82586.c
 --- qemu-src.orig/hw/net/i82586.c	1970-01-01 01:00:00.000000000 +0100
-+++ qemu-src/hw/net/i82586.c	2026-08-01 09:11:37.365402498 +0200
-@@ -0,0 +1,686 @@
++++ qemu-src/hw/net/i82586.c	2026-08-01 10:01:10.114676589 +0200
+@@ -0,0 +1,700 @@
 +/*
 + * Intel 82586 Ethernet controller, the original 16-bit part.
 + *
@@ -589,6 +603,10 @@ diff -urN qemu-src.orig/hw/net/i82586.c qemu-src/hw/net/i82586.c
 +
 +void i82586_reset(I82586State *s)
 +{
++    if (s->rtl) {
++        i82586_rtl_reset(s);
++        return;
++    }
 +    s->initialised = false;
 +    s->scb = 0;
 +    s->cb_base = 0;
@@ -886,6 +904,9 @@ diff -urN qemu-src.orig/hw/net/i82586.c qemu-src/hw/net/i82586.c
 +
 +bool i82586_can_receive(I82586State *s)
 +{
++    if (s->rtl) {
++        return i82586_rtl_can_receive(s);
++    }
 +    return s->initialised && s->ru_state == RU_READY;
 +}
 +
@@ -928,6 +949,9 @@ diff -urN qemu-src.orig/hw/net/i82586.c qemu-src/hw/net/i82586.c
 +    bool starved = false;
 +    unsigned guard;
 +
++    if (s->rtl) {
++        return i82586_rtl_receive(s, buf, size);
++    }
 +    if (!i82586_can_receive(s)) {
 +        return -1;
 +    }
@@ -1007,6 +1031,10 @@ diff -urN qemu-src.orig/hw/net/i82586.c qemu-src/hw/net/i82586.c
 +{
 +    uint16_t cmd;
 +
++    if (s->rtl) {
++        i82586_rtl_ca(s);
++        return;
++    }
 +    if (!s->initialised) {
 +        initialise(s);
 +        return;
@@ -1060,8 +1088,8 @@ diff -urN qemu-src.orig/hw/net/i82586.c qemu-src/hw/net/i82586.c
 +};
 diff -urN qemu-src.orig/hw/net/i82586.h qemu-src/hw/net/i82586.h
 --- qemu-src.orig/hw/net/i82586.h	1970-01-01 01:00:00.000000000 +0100
-+++ qemu-src/hw/net/i82586.h	2026-08-01 07:17:05.604517698 +0200
-@@ -0,0 +1,63 @@
++++ qemu-src/hw/net/i82586.h	2026-08-01 10:01:10.114676589 +0200
+@@ -0,0 +1,81 @@
 +/*
 + * Intel 82586 Ethernet controller, the original 16-bit part.
 + *
@@ -1082,6 +1110,7 @@ diff -urN qemu-src.orig/hw/net/i82586.h qemu-src/hw/net/i82586.h
 +
 +#include "net/net.h"
 +#include "hw/irq.h"
++#include "qapi/error.h"
 +
 +#define I82586_MAX_MCAST 64
 +
@@ -1115,7 +1144,24 @@ diff -urN qemu-src.orig/hw/net/i82586.h qemu-src/hw/net/i82586.h
 +    uint8_t ia[6];
 +    uint8_t mcast[I82586_MAX_MCAST][6];
 +    uint32_t n_mcast;
++
++    /*
++     * When this is set the software model above is not used at all: the four
++     * calls below hand everything to the Verilated core instead.  Which is the
++     * point of the exercise; the software model is the scaffolding that got
++     * the drivers talking in the first place.
++     */
++    char *rtl_path;
++    struct I82586Rtl *rtl;
 +} I82586State;
++
++typedef struct I82586Rtl I82586Rtl;
++
++bool i82586_rtl_open(I82586State *s, const char *path, Error **errp);
++void i82586_rtl_reset(I82586State *s);
++void i82586_rtl_ca(I82586State *s);
++bool i82586_rtl_can_receive(I82586State *s);
++ssize_t i82586_rtl_receive(I82586State *s, const uint8_t *buf, size_t size);
 +
 +void i82586_reset(I82586State *s);
 +void i82586_channel_attention(I82586State *s);
@@ -1125,21 +1171,188 @@ diff -urN qemu-src.orig/hw/net/i82586.h qemu-src/hw/net/i82586.h
 +extern const VMStateDescription vmstate_i82586;
 +
 +#endif /* HW_NET_I82586_H */
+diff -urN qemu-src.orig/hw/net/i82586_rtl.c qemu-src/hw/net/i82586_rtl.c
+--- qemu-src.orig/hw/net/i82586_rtl.c	1970-01-01 01:00:00.000000000 +0100
++++ qemu-src/hw/net/i82586_rtl.c	2026-08-01 10:00:54.274614157 +0200
+@@ -0,0 +1,163 @@
++/*
++ * The Verilated Wish82586 standing in for the software 82586.
++ *
++ * The chip model in i82586.c is a reading of what the drivers expect.  This is
++ * the RTL those drivers are supposed to run against, so putting it behind the
++ * same four calls - reset, channel attention, can-receive, receive - is what
++ * turns "we agree with ourselves about the 82586" into "an unmodified vintage
++ * driver drives this hardware".
++ *
++ * The Verilated core lives in a shared library built out of the Wish82586
++ * tree, and is loaded at run time by path.  Nothing about Verilator, C++ or
++ * the RTL leaks into QEMU: the library exports a handful of C functions, and
++ * shares the card's memory window by pointer, so the guest and the core's
++ * Wishbone master really do work in one buffer.
++ *
++ *   -device isa-3c507,netdev=n0,rtl=/path/to/libwish82586rtl.so
++ *
++ * This work is licensed under the GNU GPL license version 2 or later.
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "net/net.h"
++#include "hw/irq.h"
++#include "i82586.h"
++
++#include <dlfcn.h>
++
++#define WISH_RTL_ABI 1
++
++/* Longest thing the core can hand back, without its FCS. */
++#define RTL_MAX_FRAME 1514
++
++struct I82586Rtl {
++    void *handle;
++    void *chip;
++
++    uint32_t (*abi)(void);
++    void *(*create)(uint8_t *mem, uint32_t size, uint32_t base);
++    void (*destroy)(void *chip);
++    void (*reset)(void *chip);
++    void (*ca)(void *chip);
++    int (*irq)(void *chip);
++    int (*ru_ready)(void *chip);
++    void (*rx)(void *chip, const uint8_t *frame, uint32_t len);
++    int (*tx_pop)(void *chip, uint8_t *buf, uint32_t max);
++};
++
++static void *sym(void *handle, const char *name, Error **errp)
++{
++    void *p = dlsym(handle, name);
++
++    if (!p) {
++        error_setg(errp, "%s has no %s", "the Wish82586 library", name);
++    }
++    return p;
++}
++
++bool i82586_rtl_open(I82586State *s, const char *path, Error **errp)
++{
++    I82586Rtl *r = g_new0(I82586Rtl, 1);
++
++    r->handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (!r->handle) {
++        error_setg(errp, "cannot load %s: %s", path, dlerror());
++        goto fail;
++    }
++
++    r->abi = sym(r->handle, "wish_rtl_abi", errp);
++    r->create = sym(r->handle, "wish_rtl_new", errp);
++    r->destroy = sym(r->handle, "wish_rtl_free", errp);
++    r->reset = sym(r->handle, "wish_rtl_reset", errp);
++    r->ca = sym(r->handle, "wish_rtl_ca", errp);
++    r->irq = sym(r->handle, "wish_rtl_irq", errp);
++    r->ru_ready = sym(r->handle, "wish_rtl_ru_ready", errp);
++    r->rx = sym(r->handle, "wish_rtl_rx", errp);
++    r->tx_pop = sym(r->handle, "wish_rtl_tx_pop", errp);
++    if (!r->abi || !r->create || !r->destroy || !r->reset || !r->ca ||
++        !r->irq || !r->ru_ready || !r->rx || !r->tx_pop) {
++        goto fail;
++    }
++
++    if (r->abi() != WISH_RTL_ABI) {
++        error_setg(errp, "%s speaks ABI %u, this device speaks %u",
++                   path, r->abi(), WISH_RTL_ABI);
++        goto fail;
++    }
++
++    r->chip = r->create(s->mem, s->mem_size, s->mem_base);
++    if (!r->chip) {
++        error_setg(errp, "%s would not start a core", path);
++        goto fail;
++    }
++
++    s->rtl = r;
++    return true;
++
++fail:
++    if (r->handle) {
++        dlclose(r->handle);
++    }
++    g_free(r);
++    return false;
++}
++
++/*
++ * Everything the core did while it was running: frames onto the network, and
++ * the interrupt line as it now stands.  Called after anything that gave the
++ * core work to do.
++ */
++static void rtl_drain(I82586State *s)
++{
++    I82586Rtl *r = s->rtl;
++    uint8_t frame[RTL_MAX_FRAME];
++    int n;
++
++    while ((n = r->tx_pop(r->chip, frame, sizeof(frame))) > 0) {
++        qemu_send_packet(qemu_get_queue(s->nic), frame, n);
++    }
++    qemu_set_irq(s->irq, r->irq(r->chip));
++}
++
++void i82586_rtl_reset(I82586State *s)
++{
++    I82586Rtl *r = s->rtl;
++
++    r->reset(r->chip);
++    qemu_set_irq(s->irq, r->irq(r->chip));
++}
++
++void i82586_rtl_ca(I82586State *s)
++{
++    I82586Rtl *r = s->rtl;
++
++    r->ca(r->chip);
++    rtl_drain(s);
++    if (r->ru_ready(r->chip)) {
++        qemu_flush_queued_packets(qemu_get_queue(s->nic));
++    }
++}
++
++bool i82586_rtl_can_receive(I82586State *s)
++{
++    I82586Rtl *r = s->rtl;
++
++    return r->ru_ready(r->chip) != 0;
++}
++
++/*
++ * The core does its own address filtering, out of whatever the driver set up
++ * with IA-SETUP and MC-SETUP, so everything off the wire goes to it.
++ */
++ssize_t i82586_rtl_receive(I82586State *s, const uint8_t *buf, size_t size)
++{
++    I82586Rtl *r = s->rtl;
++
++    if (size > RTL_MAX_FRAME) {
++        return size;
++    }
++    r->rx(r->chip, buf, size);
++    rtl_drain(s);
++    return size;
++}
 diff -urN qemu-src.orig/hw/net/meson.build qemu-src/hw/net/meson.build
 --- qemu-src.orig/hw/net/meson.build	2025-12-06 14:17:12.000000000 +0100
-+++ qemu-src/hw/net/meson.build	2026-08-01 07:44:58.601299229 +0200
++++ qemu-src/hw/net/meson.build	2026-08-01 10:01:10.114676589 +0200
 @@ -18,6 +18,7 @@
  softmmu_ss.add(when: 'CONFIG_SMC91C111', if_true: files('smc91c111.c'))
  softmmu_ss.add(when: 'CONFIG_LAN9118', if_true: files('lan9118.c'))
  softmmu_ss.add(when: 'CONFIG_NE2000_ISA', if_true: files('ne2000-isa.c'))
-+softmmu_ss.add(when: 'CONFIG_STARLAN10', if_true: files('starlan10.c', 'elink507.c', 'i82586.c'))
++softmmu_ss.add(when: 'CONFIG_STARLAN10', if_true: files('starlan10.c', 'elink507.c', 'i82586.c', 'i82586_rtl.c'))
  softmmu_ss.add(when: 'CONFIG_OPENCORES_ETH', if_true: files('opencores_eth.c'))
  softmmu_ss.add(when: 'CONFIG_XGMAC', if_true: files('xgmac.c'))
  softmmu_ss.add(when: 'CONFIG_MIPSNET', if_true: files('mipsnet.c'))
 diff -urN qemu-src.orig/hw/net/starlan10.c qemu-src/hw/net/starlan10.c
 --- qemu-src.orig/hw/net/starlan10.c	1970-01-01 01:00:00.000000000 +0100
-+++ qemu-src/hw/net/starlan10.c	2026-08-01 08:55:40.335778912 +0200
-@@ -0,0 +1,233 @@
++++ qemu-src/hw/net/starlan10.c	2026-08-01 10:01:20.126715731 +0200
+@@ -0,0 +1,240 @@
 +/*
 + * AT&T StarLAN 10 ISA Ethernet card.
 + *
@@ -1318,6 +1531,12 @@ diff -urN qemu-src.orig/hw/net/starlan10.c qemu-src/hw/net/starlan10.c
 +    qemu_macaddr_default_if_unset(&s->i82586.conf.macaddr);
 +    memcpy(s->i82586.ia, s->i82586.conf.macaddr.a, 6);
 +
++    /* Before the first reset: from here on the chip may be the RTL one. */
++    if (s->i82586.rtl_path &&
++        !i82586_rtl_open(&s->i82586, s->i82586.rtl_path, errp)) {
++        return;
++    }
++
 +    i82586_reset(&s->i82586);
 +
 +    s->i82586.nic = qemu_new_nic(&net_starlan10_info, &s->i82586.conf,
@@ -1344,6 +1563,7 @@ diff -urN qemu-src.orig/hw/net/starlan10.c qemu-src/hw/net/starlan10.c
 +    DEFINE_PROP_UINT32("iomem", ISAStarlan10State, iomem, 0xd0000),
 +    DEFINE_PROP_UINT32("memsize", ISAStarlan10State, memsize, 64 * KiB),
 +    DEFINE_PROP_UINT32("revision", ISAStarlan10State, revision, 1),
++    DEFINE_PROP_STRING("rtl", ISAStarlan10State, i82586.rtl_path),
 +    DEFINE_NIC_PROPERTIES(ISAStarlan10State, i82586.conf),
 +    DEFINE_PROP_END_OF_LIST(),
 +};

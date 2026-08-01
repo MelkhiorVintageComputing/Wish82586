@@ -10,7 +10,19 @@ namespace wtb {
 
 WbMem::WbMem(Sim& sim, Sim::Clock* clk, WbSlavePorts ports, size_t size_bytes,
              uint32_t base)
-    : sim_(sim), p_(ports), mem_(size_bytes, 0), base_(base) {
+    : sim_(sim), p_(ports), owned_(size_bytes, 0), base_(base) {
+  data_ = owned_.data();
+  size_ = owned_.size();
+  attach(clk);
+}
+
+WbMem::WbMem(Sim& sim, Sim::Clock* clk, WbSlavePorts ports, uint8_t* data,
+             size_t size_bytes, uint32_t base)
+    : sim_(sim), p_(ports), data_(data), size_(size_bytes), base_(base) {
+  attach(clk);
+}
+
+void WbMem::attach(Sim::Clock* clk) {
   *p_.ack = 0;
   *p_.err = 0;
   *p_.dat_r = 0;
@@ -19,7 +31,7 @@ WbMem::WbMem(Sim& sim, Sim::Clock* clk, WbSlavePorts ports, size_t size_bytes,
 
 uint8_t WbMem::rd8(uint32_t a) const {
   if (!contains(a)) return 0;
-  return mem_[a - base_];
+  return data_[a - base_];
 }
 
 uint16_t WbMem::rd16(uint32_t a) const {
@@ -40,7 +52,7 @@ void WbMem::wr8(uint32_t a, uint8_t v) {
     oob_addr_ = a;
     return;
   }
-  mem_[a - base_] = v;
+  data_[a - base_] = v;
 }
 
 void WbMem::wr16(uint32_t a, uint16_t v) {
@@ -69,7 +81,7 @@ Bytes WbMem::read_block(uint32_t a, size_t n) const {
 }
 
 void WbMem::clear(uint8_t pattern) {
-  for (auto& b : mem_) b = pattern;
+  for (size_t i = 0; i < size_; i++) data_[i] = pattern;
 }
 
 void WbMem::tick() {

@@ -11,6 +11,7 @@
 # with ourselves.
 #
 #   run-cosim.py                 the software 82586 inside QEMU
+#   run-cosim.py --rtl           the Verilated wish82586 instead
 #   run-cosim.py --card starlan10   the other board (see below)
 #   run-cosim.py --keep          leave the disk image writable
 #
@@ -29,6 +30,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 WORK = os.environ.get("WORK", os.path.join(ROOT, "work"))
 QEMU = os.path.join(WORK, "qemu-install", "bin", "qemu-system-i386")
 IMAGE = os.path.join(WORK, "images", "netbsd-10.1-i386.qcow2")
+RTL_LIB = os.path.join(WORK, "lib", "libwish82586rtl.so")
 
 # The slirp network QEMU puts behind -netdev user.
 GUEST_IP = "10.0.2.15"
@@ -44,6 +46,10 @@ CARDS = {
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--card", choices=sorted(CARDS), default="3c507")
+    ap.add_argument("--rtl", nargs="?", const=RTL_LIB, default=None,
+                    metavar="LIB",
+                    help="put the Verilated core behind the card instead of "
+                         "the software 82586 (build it in cosim/rtl)")
     ap.add_argument("--keep", action="store_true",
                     help="write to the disk image instead of a snapshot")
     ap.add_argument("--timeout", type=int, default=300)
@@ -52,6 +58,9 @@ def main():
     for path in (QEMU, IMAGE):
         if not os.path.exists(path):
             sys.exit(f"missing {path}; run the other scripts in {HERE} first")
+
+    if args.rtl and not os.path.exists(args.rtl):
+        sys.exit(f"missing {args.rtl}; run make in cosim/rtl first")
 
     drive = f"file={IMAGE},format=qcow2,if=ide,index=0"
     if not args.keep:
@@ -70,10 +79,12 @@ def main():
         "-serial", "stdio",
         "-monitor", "none",
         "-netdev", "user,id=n0",
-        "-device", f"{CARDS[args.card]},netdev=n0",
+        "-device", f"{CARDS[args.card]},netdev=n0" +
+                   (f",rtl={args.rtl}" if args.rtl else ""),
     ]
 
-    print(f"== booting {IMAGE} with {CARDS[args.card]}")
+    print(f"== booting {IMAGE} with {CARDS[args.card]}, "
+          f"{'the Verilated core' if args.rtl else 'the software 82586'}")
     child = pexpect.spawn(QEMU, qemu_args, timeout=args.timeout,
                           encoding="utf-8", codec_errors="replace")
     child.logfile_read = sys.stdout

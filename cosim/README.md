@@ -27,13 +27,28 @@ cosim/scripts/build-qemu.sh      # i386 only, into work/qemu-install
 cosim/scripts/fetch-netbsd.sh    # the serial console install ISO
 cosim/scripts/make-image.py      # drive sysinst over serial into a disk image
 cosim/scripts/boot-netbsd.sh     # boot what came out
+make -C cosim/rtl                # the Verilated core, as a shared library
+make -C cosim/rtl check          # drive that library the way the driver does
 cosim/scripts/run-cosim.py       # boot with the card and check it passes traffic
+cosim/scripts/run-cosim.py --rtl # the same, with the RTL behind the card
 ```
 
 `run-cosim.py` is the one that says whether anything works.  It logs in, brings
 the interface up, pings through the emulated network, and fails if the driver
 did not attach, if a ping was lost, or if the interface counted any error.  It
 runs on a snapshot of the disk image unless given `--keep`.
+
+Without `--rtl` the card is backed by a software 82586 inside QEMU, which is
+useful when the question is whether the *harness* works.  With it, the card is
+backed by `src/`.
+
+## Layout
+
+```
+patches/   the QEMU device model: the 82586, two ISA boards, the RTL backend
+rtl/       the Verilated core as a shared library, and its own self test
+scripts/   fetch, build, install, run
+```
 
 ## Regenerating a patch
 
