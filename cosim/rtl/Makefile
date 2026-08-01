@@ -45,7 +45,8 @@ RTL       := $(RTL_DIR)/wish82586_pkg.sv \
              $(RTL_DIR)/ie_core.sv \
              $(RTL_DIR)/ie_cu.sv \
              $(RTL_DIR)/ie_ru.sv \
-             $(RTL_DIR)/wish82586.sv
+             $(RTL_DIR)/wish82586.sv \
+             $(RTL_DIR)/wish82586_wb.sv
 
 # Only the testbench pieces that model hardware; nothing that knows about
 # tests, and nothing that builds the shared memory image.

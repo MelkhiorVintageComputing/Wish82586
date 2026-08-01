@@ -25,6 +25,19 @@ module tb_top #(
     output logic        dut_wbs_ack_o,
     output logic        dut_wbs_err_o,
 
+    // ---- DUT: the core's own host pins, beside the register block ---------
+    // wb_csr is not part of the MAC, so the testbench wires the two together
+    // the way a system would.  These let a test reach the core directly and
+    // prove it needs no registers at all; they are ORed into whatever wb_csr
+    // is driving, so a test that leaves them alone sees no difference.
+    input  logic        dut_core_rst_i,
+    input  logic        dut_ca_i,
+    output logic [2:0]  dut_cus_o,
+    output logic [2:0]  dut_rus_o,
+    output logic        dut_busy_o,
+    output logic        dut_int_o,
+    output logic        dut_bus_err_o,
+
     // ---- DUT: Wishbone master (shared memory) -----------------------------
     output logic        dut_wbm_cyc_o,
     output logic        dut_wbm_stb_o,
@@ -134,7 +147,11 @@ module tb_top #(
     output logic [4:0]  fifo_level
 );
 
-  wish82586 #(.PHY_DATA_W(PHY_DATA_W)) u_dut (
+  logic        csr_core_rst;
+  logic        csr_ca;
+  logic [31:0] csr_scp_addr;
+
+  wb_csr u_csr (
       .clk        (clk),
       .rst        (rst),
       .wbs_cyc_i  (dut_wbs_cyc_i),
@@ -146,6 +163,27 @@ module tb_top #(
       .wbs_dat_o  (dut_wbs_dat_o),
       .wbs_ack_o  (dut_wbs_ack_o),
       .wbs_err_o  (dut_wbs_err_o),
+      .core_rst_o (csr_core_rst),
+      .ca_o       (csr_ca),
+      .scp_addr_o (csr_scp_addr),
+      .cus_i      (dut_cus_o),
+      .rus_i      (dut_rus_o),
+      .busy_i     (dut_busy_o),
+      .int_i      (dut_int_o),
+      .irq_o      (dut_irq_o)
+  );
+
+  wish82586 #(.PHY_DATA_W(PHY_DATA_W)) u_dut (
+      .clk        (clk),
+      .rst        (rst),
+      .core_rst_i (csr_core_rst | dut_core_rst_i),
+      .ca_i       (csr_ca | dut_ca_i),
+      .scp_addr_i (csr_scp_addr),
+      .cus_o      (dut_cus_o),
+      .rus_o      (dut_rus_o),
+      .busy_o     (dut_busy_o),
+      .int_o      (dut_int_o),
+      .bus_err_o  (dut_bus_err_o),
       .wbm_cyc_o  (dut_wbm_cyc_o),
       .wbm_stb_o  (dut_wbm_stb_o),
       .wbm_we_o   (dut_wbm_we_o),
@@ -155,7 +193,6 @@ module tb_top #(
       .wbm_dat_i  (dut_wbm_dat_i),
       .wbm_ack_i  (dut_wbm_ack_i),
       .wbm_err_i  (dut_wbm_err_i),
-      .irq_o      (dut_irq_o),
       .mii_tx_clk (dut_mii_tx_clk),
       .mii_txd    (dut_mii_txd),
       .mii_tx_en  (dut_mii_tx_en),

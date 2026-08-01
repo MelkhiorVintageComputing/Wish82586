@@ -53,7 +53,8 @@ RTL       := $(RTL_DIR)/wish82586_pkg.sv \
              $(RTL_DIR)/ie_core.sv \
              $(RTL_DIR)/ie_cu.sv \
              $(RTL_DIR)/ie_ru.sv \
-             $(RTL_DIR)/wish82586.sv
+             $(RTL_DIR)/wish82586.sv \
+             $(RTL_DIR)/wish82586_wb.sv
 TB_SV     := $(TB_SV_DIR)/tb_top.sv
 CPP_SRCS  := $(wildcard $(TB_CPP)/*.cpp) $(wildcard $(TB_CPP)/tests/*.cpp)
 CPP_HDRS  := $(wildcard $(TB_CPP)/*.h)
@@ -93,8 +94,8 @@ list: $(BIN)
 	@$(BIN) --list
 
 lint:
-	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=4 --top-module wish82586 $(RTL)
-	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=8 --top-module wish82586 $(RTL)
+	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=4 --top-module wish82586_wb $(RTL)
+	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=8 --top-module wish82586_wb $(RTL)
 	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=4 --top-module $(TOP) $(RTL) $(TB_SV)
 	$(VERILATOR) --lint-only -Wall -GPHY_DATA_W=8 --top-module $(TOP) $(RTL) $(TB_SV)
 
@@ -102,7 +103,7 @@ lint-icarus:
 	$(IVERILOG) -g2012 -t null -o /dev/null $(RTL) $(TB_SV)
 
 synth:
-	@for top in wish82586 crc32_eth sync_fifo async_fifo mii_rx mii_tx dp_ram wb_csr wb_mdio mdio_prog wb_master wb_arb ie_core ie_cu ie_ru; do \
+	@for top in wish82586_wb wish82586 crc32_eth sync_fifo async_fifo mii_rx mii_tx dp_ram wb_csr wb_mdio mdio_prog wb_master wb_arb ie_core ie_cu ie_ru; do \
 	  printf '%-12s ' "$$top"; \
 	  $(YOSYS) -q -p "read_verilog -sv $(RTL); hierarchy -check -top $$top; proc; opt" \
 	    && echo "elaborates" || exit 1; \

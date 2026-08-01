@@ -69,12 +69,18 @@ expectations from the RTL.
 
 ### RTL (`src/`)
 
-`wish82586.sv` is the top: it instantiates the control registers, the SCB
-handler, the command and receive units, the receive front end and the memory
-port, and holds the TODO block listing what still has to be built (the
-transmit datapath).  Everything the core does not drive yet is tied
-off there, including a `_unused` sink that keeps the linter quiet - shrink it
-as signals get consumed.
+`wish82586.sv` is the MAC: the SCB handler, the command and receive units, the
+receive front end and the memory port.  Its host side is the real part's
+pins - RESET, CA, INT, the SCP address - and **not** a register block, because
+every machine that used an 82586 invented its own; `doc/sun2_ethernet.pdf` is
+the Sun-2's, which agrees with `wb_csr` about nothing.  Recreating a machine
+means writing its register block and instantiating the MAC beside it.
+`wish82586_wb.sv` is that wiring for this project's own convention - `wb_csr`
+plus the MAC - and is what `cosim/` drives; `tb/sv/tb_top.sv` does the same
+wiring itself so a test can also reach the core's pins directly.
+
+`wish82586.sv` also holds a `_unused` sink that keeps the linter quiet -
+shrink it as signals get consumed.
 
 Working blocks: `wb_csr` (control registers), `ie_core` (initialisation
 sequencer and SCB handler), `ie_cu` (command unit, including TRANSMIT),
@@ -147,11 +153,15 @@ Ordering that matters, all of it learned from tests that failed:
   with it sends the frame a nibble short - which shows up as a frame one byte
   small with a bad FCS, not as anything obviously timing related.
 
-The real 82586 has no software-visible registers, only RESET, CA and INT pins.
-`wb_csr` exposes those as a small Wishbone slave, and makes the SCP address
-programmable (it is hard-wired to `0xFFFFF6` on the real part).  `CTRL.RST` is
-a level that reads back and comes out of power-on reset **set**, so the host
-must clear it - the same shape as the `obie_noreset` bit the Sun driver pokes.
+The real 82586 has no software-visible registers, only RESET, CA and INT pins,
+which is why they are pins on `wish82586` too.  `wb_csr` exposes them as a
+small Wishbone slave and makes the SCP address programmable (it is hard-wired
+to `0xFFFFF6` on the real part).  `CTRL.RST` is a level that reads back and
+comes out of power-on reset **set**, so the host must clear it - the same shape
+as the `obie_noreset` bit the Sun driver pokes.  A different machine's register
+block goes in its place: see `doc/interface.md` and
+`sys_channel_attention_needs_no_registers`, which drives the core's `ca_i` pin
+with no register write at all.
 
 ### Testbench (`tb/cpp/`)
 

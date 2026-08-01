@@ -99,6 +99,47 @@ TEST(sys_command_list) {
   CHECK_EQ(img.scb_cus(), uint16_t(ie::CUS_IDLE));
 }
 
+// The control registers are not part of the MAC.  A machine being recreated
+// brings its own - doc/sun2_ethernet.pdf is the Sun-2's, one byte with RESET
+// and LOOPB active low and CA at bit 5 - so the core has to work when
+// something other than wb_csr drives its three host pins.  tb_top ORs these
+// into wb_csr's, which is as close as this testbench gets to being that other
+// machine.
+TEST(sys_channel_attention_needs_no_registers) {
+  CHECK_DRV(env.drv().init());
+  ie::MemImage& img = env.img();
+
+  const uint16_t cb = img.add_nop(ie::CB_CMD_EL | ie::CB_CMD_I);
+  img.set_scb_cbl(cb);
+  img.set_scb_cmd(uint16_t(ie::CUC_START << ie::SCB_CMD_CUC_LSB));
+
+  // One cycle on the pin, and nothing on the bus: no CSR write at all.
+  env.mem().clear_log();
+  const uint32_t csr_before = env.host().read32(csr::CTRL);
+  env.dut()->dut_ca_i = 1;
+  env.tick(1);
+  env.dut()->dut_ca_i = 0;
+
+  CHECK_MSG(env.sim().run_until(
+                [&]() { return (img.cb_status(cb) & ie::CB_ST_C) != 0; },
+                env.drv().t_cmd),
+            "the command never completed after channel attention on the pin");
+  CHECK_MSG(img.cb_status(cb) & ie::CB_ST_OK, "the command reported failure");
+  CHECK_EQ(env.host().read32(csr::CTRL), csr_before);
+
+  // The interrupt is the core's own pin, and follows the published status.
+  CHECK_MSG(env.sim().run_until([&]() { return env.dut()->dut_int_o != 0; },
+                                env.drv().t_cmd),
+            "the core never asked for an interrupt");
+  CHECK_MSG(img.scb_status() & ie::SCB_ST_CX,
+            "the interrupt came before the status reached memory");
+
+  // And what the register block reads back is those pins, not its own idea.
+  CHECK_EQ(uint32_t(env.dut()->dut_cus_o), uint32_t(img.scb_cus()));
+  CHECK_EQ(uint32_t(env.dut()->dut_rus_o), uint32_t(img.scb_rus()));
+  CHECK_MSG(!env.dut()->dut_bus_err_o, "the core reported a bus error");
+}
+
 TEST(sys_command_suspend_and_resume) {
   CHECK_DRV(env.drv().init());
   ie::MemImage& img = env.img();

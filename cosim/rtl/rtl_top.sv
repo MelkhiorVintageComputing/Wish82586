@@ -2,9 +2,9 @@
 //
 // Simulation top level for the co-simulation library.
 //
-// The DUT and nothing else.  It exists only to widen the narrow ports to the
-// widths the C++ bus models expect to find a `uint32_t' behind, exactly as
-// tb/sv/tb_top.sv does for the regression.  No behaviour here.
+// The MAC with this project's own control registers on it - wish82586_wb -
+// and nothing else.  It exists only to widen the narrow ports to the widths
+// the C++ bus models expect to find a `uint32_t' behind.  No behaviour here.
 
 module rtl_top #(
     parameter int PHY_DATA_W = 4     // 4 = MII, 8 = GMII
@@ -51,7 +51,7 @@ module rtl_top #(
     input  logic        mii_col
 );
 
-  wish82586 #(.PHY_DATA_W(PHY_DATA_W)) u_dut (
+  wish82586_wb #(.PHY_DATA_W(PHY_DATA_W)) u_dut (
       .clk        (clk),
       .rst        (rst),
       .wbs_cyc_i  (wbs_cyc_i),

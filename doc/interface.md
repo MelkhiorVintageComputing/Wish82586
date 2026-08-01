@@ -3,6 +3,45 @@
 This is what the testbench in `tb/` assumes and what the RTL in `src/` has to
 provide.  Changing anything here means changing both sides.
 
+## What is the MAC and what is the machine around it
+
+The real 82586 has no software-visible registers.  It has RESET, CA and INT as
+pins, an interrupt, and its 24-bit view of memory; everything a driver writes
+to "the chip" is really a register the machine's designer put in front of those
+pins.  Every machine did it differently - `doc/sun2_ethernet.pdf` is the
+Sun-2's, a single byte with `RESET*` and `LOOPB*` active low, CA at bit 5, and
+a bus error bit that inhibits the channel until reset clears it.
+
+`wish82586` follows the part: those signals are pins.
+
+| module          | what it is                                              |
+|-----------------|---------------------------------------------------------|
+| `wish82586`     | the MAC.  Host side is RESET, CA, INT and the SCP address as pins, plus the Wishbone master |
+| `wb_csr`        | the register block this document defines, driving those pins from a Wishbone slave port |
+| `wish82586_wb`  | the two wired together - the default, and what `tb/` and `cosim/` drive |
+
+Recreating a machine means writing its register block and instantiating
+`wish82586` beside it instead of using `wish82586_wb`.  Nothing in the MAC has
+to change for that, which is the point of the split.
+
+### The core's host pins
+
+| signal      | direction | notes                                             |
+|-------------|-----------|---------------------------------------------------|
+| `core_rst_i`| in        | level; holds the core in reset                     |
+| `ca_i`      | in        | channel attention, one `clk` cycle                 |
+| `scp_addr_i`| in        | byte address of the System Configuration Pointer   |
+| `cus_o`     | out       | command unit status, as it appears in the SCB      |
+| `rus_o`     | out       | receive unit status, likewise                      |
+| `busy_o`    | out       | the core is working on something                   |
+| `int_o`     | out       | level; an unacknowledged SCB status bit            |
+| `bus_err_o` | out       | one cycle per shared-memory access answered `ERR`  |
+
+`int_o` is ungated: masking it is the register block's job, which is what
+`wb_csr` does with `CTRL.IRQ_EN`.  `bus_err_o` has no consumer in `wb_csr` -
+Wishbone leaves error reporting to the master's own `ERR` line - and exists for
+register blocks like the Sun-2's that report it to software.
+
 ## Clocks and reset
 
 | signal   | direction | notes                                              |
@@ -28,7 +67,8 @@ drivers are defined; divide by four to get what travels on `ADR`.
 
 ## Wishbone B4 classic slave - control registers
 
-6-bit address (a register index), 32-bit data, byte selects honoured.
+`wb_csr`, and so `wish82586_wb`.  6-bit address (a register index), 32-bit
+data, byte selects honoured.
 `ACK_O` comes back the cycle after the request; `ERR_O` is never asserted.
 
 | offset | name       | access | contents                                            |
@@ -72,9 +112,10 @@ ports and is checked at elaboration; it is not a knob.
 
 ## Interrupt
 
-`irq_o` is a level, asserted while `CTRL.IRQ_EN` is set and the core has an
-unacknowledged SCB status bit (CX, FR, CNA, RNR).  Acknowledging through the
-SCB command word clears it.
+`irq_o` on `wish82586_wb` is a level, asserted while `CTRL.IRQ_EN` is set and
+the core has an unacknowledged SCB status bit (CX, FR, CNA, RNR).
+Acknowledging through the SCB command word clears it.  The core's own `int_o`
+is the same signal without the enable.
 
 ## MII and GMII
 

@@ -2,9 +2,18 @@
 //
 // Wish82586 - Intel 82586 software-compatible Ethernet MAC.
 //
-//   host side : Wishbone B4 classic slave  (CSR: reset, channel attention, ...)
+//   host side : RESET, CA and INT, plus the SCP address, as pins
 //               Wishbone B4 classic master (DMA into the shared host memory)
 //   PHY side  : MII or GMII
+//
+// The real 82586 has no software-visible registers at all, only those three
+// pins, and every machine that used one wrapped them in a control register of
+// its own devising - see doc/sun2_ethernet.pdf for what the Sun-2 did, which
+// agrees with wb_csr about nothing except that the three signals exist.  So
+// they are pins here too, and the register block that drives them is a
+// separate module: wb_csr for the Wishbone convention this project defines,
+// something else for a machine being recreated.  wish82586_wb is the two of
+// them wired together, which is what a system wanting the default gets.
 //
 // PHY management is not here: the 82586 predates MDIO and no driver expects
 // it, so wb_mdio and mdio_prog do that job beside the MAC rather than inside
@@ -25,16 +34,17 @@ module wish82586 #(
     input  logic                   clk,
     input  logic                   rst,          // Wishbone RST_I: synchronous, active high
 
-    // ---- Wishbone B4 classic slave: control registers ---------------------
-    input  logic                   wbs_cyc_i,
-    input  logic                   wbs_stb_i,
-    input  logic                   wbs_we_i,
-    input  logic [3:0]             wbs_sel_i,
-    input  logic [5:0]             wbs_adr_i,   // word address
-    input  logic [31:0]            wbs_dat_i,
-    output logic [31:0]            wbs_dat_o,
-    output logic                   wbs_ack_o,
-    output logic                   wbs_err_o,
+    // ---- host control, as the chip's own pins -----------------------------
+    input  logic                   core_rst_i,  // level: holds the core in reset
+    input  logic                   ca_i,        // channel attention, one cycle
+    input  logic [31:0]            scp_addr_i,  // hard-wired to 0xFFFFF6 on the part
+    output logic [2:0]             cus_o,       // command unit status
+    output logic [2:0]             rus_o,       // receive unit status
+    output logic                   busy_o,
+    output logic                   int_o,       // level interrupt request
+    // One cycle per shared-memory access the bus answered with ERR.  The
+    // Sun-2's control register has a bit for exactly this.
+    output logic                   bus_err_o,
 
     // ---- Wishbone B4 classic master: shared memory ------------------------
     output logic                   wbm_cyc_o,
@@ -46,9 +56,6 @@ module wish82586 #(
     input  logic [WB_DATA_W-1:0]   wbm_dat_i,
     input  logic                   wbm_ack_i,
     input  logic                   wbm_err_i,
-
-    // ---- interrupt --------------------------------------------------------
-    output logic                   irq_o,
 
     // ---- MII --------------------------------------------------------------
     input  logic                   mii_tx_clk,
@@ -62,41 +69,6 @@ module wish82586 #(
     input  logic                   mii_crs,
     input  logic                   mii_col
 );
-
-  // ---------------------------------------------------------------------------
-  // Control registers
-  // ---------------------------------------------------------------------------
-  logic        core_rst;
-  logic        ca;
-  logic [31:0] scp_addr;
-
-  // What the two units report back to the host through CSR STATUS.
-  logic [2:0]  cus;
-  logic [2:0]  rus;
-  logic        busy;
-  logic        core_int;
-
-  wb_csr u_csr (
-      .clk        (clk),
-      .rst        (rst),
-      .wbs_cyc_i  (wbs_cyc_i),
-      .wbs_stb_i  (wbs_stb_i),
-      .wbs_we_i   (wbs_we_i),
-      .wbs_sel_i  (wbs_sel_i),
-      .wbs_adr_i  (wbs_adr_i),
-      .wbs_dat_i  (wbs_dat_i),
-      .wbs_dat_o  (wbs_dat_o),
-      .wbs_ack_o  (wbs_ack_o),
-      .wbs_err_o  (wbs_err_o),
-      .core_rst_o (core_rst),
-      .ca_o       (ca),
-      .scp_addr_o (scp_addr),
-      .cus_i      (cus),
-      .rus_i      (rus),
-      .busy_i     (busy),
-      .int_i      (core_int),
-      .irq_o      (irq_o)
-  );
 
   // ---------------------------------------------------------------------------
   // Initialisation sequencer and SCB handler, and the memory port it drives.
@@ -177,13 +149,13 @@ module wish82586 #(
   ie_core u_core (
       .clk          (clk),
       .rst          (rst),
-      .core_rst_i   (core_rst),
-      .ca_i         (ca),
-      .scp_addr_i   (scp_addr),
-      .cus_o        (cus),
-      .rus_o        (rus),
-      .busy_o       (busy),
-      .int_o        (core_int),
+      .core_rst_i   (core_rst_i),
+      .ca_i         (ca_i),
+      .scp_addr_i   (scp_addr_i),
+      .cus_o        (cus_o),
+      .rus_o        (rus_o),
+      .busy_o       (busy_o),
+      .int_o        (int_o),
       .cbbase_o     (cbbase),
       .cu_start_o   (cu_start),
       .cu_cbl_o     (cu_cbl),
@@ -216,7 +188,7 @@ module wish82586 #(
   ie_cu u_cu (
       .clk          (clk),
       .rst          (rst),
-      .core_rst_i   (core_rst),
+      .core_rst_i   (core_rst_i),
       .cbbase_i     (cbbase),
       .start_i      (cu_start),
       .start_cbl_i  (cu_cbl),
@@ -314,7 +286,7 @@ module wish82586 #(
   ie_ru u_ru (
       .clk             (clk),
       .rst             (rst),
-      .core_rst_i      (core_rst),
+      .core_rst_i      (core_rst_i),
       .cbbase_i        (cbbase),
       .scb_addr_i      (scb_base),
       .start_i         (ru_start),
@@ -449,6 +421,10 @@ module wish82586 #(
       .crs           (mii_crs),
       .col           (mii_col)
   );
+
+  // A machine's own control register may want to latch this; the Sun-2's has
+  // an ERR bit that inhibits further channel activity until RESET clears it.
+  assign bus_err_o = bus_err;
 
   // Only some of cfg_bytes is sliced out above - the rest of the CONFIGURE
   // block is captured but has no consumer - and the three counters exist to be

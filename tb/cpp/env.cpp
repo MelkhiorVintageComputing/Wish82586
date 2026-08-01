@@ -116,6 +116,10 @@ void Env::bind_models() {
   drv_.reset(new IeDriver(*sim_, *host_, *img_));
 
   d->rst = 1;
+  // The core's own host pins, ORed into wb_csr's inside tb_top; a test that
+  // wants to drive the core without the register block raises them itself.
+  d->dut_core_rst_i = 0;
+  d->dut_ca_i = 0;
   sim_->eval();
 }
 
