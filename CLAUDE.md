@@ -18,6 +18,9 @@ Which driver to read matters:
   structure offsets.**  It serves both a little-endian ISA card and big-endian
   Suns, so it describes the chip's own view of memory, which is what the RTL
   sees.
+* **`doc/drivers/NetBSD/mii.h` is the authority for MDIO**, which no driver
+  here touches at all - the chip predates it.  See that directory's
+  `README.md`.
 * The `doc/drivers/Sun*_ROM` headers are a *byte-swapped* view - those machines
   swap in hardware between the CPU and the shared memory - so their bit
   numbers disagree with ours by design.  Read them for behaviour and driver
@@ -66,6 +69,14 @@ Two files hold the same 82586 constants and must be kept in step by hand:
 `src/wish82586_pkg.sv` (RTL) and `tb/cpp/i82586.h` (testbench).  They are
 deliberately independent - the testbench is not allowed to derive its
 expectations from the RTL.
+
+The MDIO side has the same pair - the localparams in `src/mdio_prog.sv` and
+`tb/cpp/mii.h` - pinned to `doc/drivers/NetBSD/mii.h` by
+`mdio_constants_match_the_reference`.  There is no vintage driver to appeal to
+here, because the 82586 predates MDIO, so that header is the only outside
+authority; `doc/drivers/NetBSD/README.md` says why it is a good one.  The RTL
+uses Linux's names for those bits and the other two do not, which is
+deliberate - a shared name is how one mistake reaches both copies.
 
 ### RTL (`src/`)
 

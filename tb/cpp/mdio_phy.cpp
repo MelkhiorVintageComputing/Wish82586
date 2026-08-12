@@ -2,13 +2,15 @@
 
 #include "mdio_phy.h"
 
+#include "mii.h"
+
 namespace wtb {
 
 namespace {
-constexpr uint8_t OP_READ = 0x2;   // 10
-constexpr uint8_t OP_WRITE = 0x1;  // 01
-constexpr uint8_t MII_BMCR = 0;
-constexpr uint16_t BMCR_RESET = 0x8000;
+constexpr uint8_t OP_READ = mii::OP_READ;
+constexpr uint8_t OP_WRITE = mii::OP_WRITE;
+constexpr uint8_t MII_BMCR = mii::REG_CONTROL;
+constexpr uint16_t BMCR_RESET = mii::CTRL_RESET;
 }  // namespace
 
 MdioPhy::MdioPhy(Sim& sim, Sim::Clock* sample_clk, MdioPorts ports, uint8_t addr)
@@ -54,7 +56,7 @@ void MdioPhy::on_rising(bool bit) {
       } else {
         // The first zero ends the preamble and is the first bit of the start
         // delimiter, which is 01.
-        if (ones_ < 32) short_preamble_ = true;
+        if (ones_ < mii::PREAMBLE_BITS) short_preamble_ = true;
         ones_ = 0;
         st_ = St::St1;
       }
@@ -68,7 +70,7 @@ void MdioPhy::on_rising(bool bit) {
 
     case St::Op:
       op_ = uint8_t((op_ << 1) | (bit ? 1 : 0));
-      if (++count_ == 2) {
+      if (++count_ == 2) {   // two opcode bits
         count_ = 0;
         phyad_ = 0;
         st_ = St::PhyAd;
@@ -77,7 +79,7 @@ void MdioPhy::on_rising(bool bit) {
 
     case St::PhyAd:
       phyad_ = uint8_t((phyad_ << 1) | (bit ? 1 : 0));
-      if (++count_ == 5) {
+      if (++count_ == mii::ADDR_BITS) {
         count_ = 0;
         regad_ = 0;
         st_ = St::RegAd;
@@ -86,7 +88,7 @@ void MdioPhy::on_rising(bool bit) {
 
     case St::RegAd:
       regad_ = uint8_t((regad_ << 1) | (bit ? 1 : 0));
-      if (++count_ == 5) {
+      if (++count_ == mii::ADDR_BITS) {
         count_ = 0;
         for_us_ = (phyad_ == addr_);
         st_ = St::Ta;
@@ -114,7 +116,7 @@ void MdioPhy::on_rising(bool bit) {
         // is sixteen bits of data in a wider word, and shifting would push the
         // top bit off the end and put everything on the wire one place out.
         driving_ = true;
-        out_bit_ = 16;
+        out_bit_ = mii::DATA_BITS;
       }
       if (count_ == 2) {
         count_ = 0;
@@ -125,7 +127,7 @@ void MdioPhy::on_rising(bool bit) {
 
     case St::Data:
       if (op_ == OP_WRITE) data_ = uint16_t((data_ << 1) | (bit ? 1 : 0));
-      if (++count_ == 16) {
+      if (++count_ == mii::DATA_BITS) {
         if (for_us_ && op_ == OP_WRITE) {
           regs_[regad_ & 0x1f] = data_;
           writes_.push_back(Write{sim_.time_ps(), phyad_, regad_, data_});

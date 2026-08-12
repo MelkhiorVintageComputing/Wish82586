@@ -19,11 +19,17 @@ headers.
 | `if_ie_obio_sun3.c`   | `sys/arch/sun3/dev/if_ie_obio.c`     |
 | `if_ie_vme_sun3.c`    | `sys/arch/sun3/dev/if_ie_vme.c`      |
 | `if_ievar.h`          | `sys/arch/sun3/dev/if_ievar.h`       |
+| `mii.h`               | `sys/dev/mii/mii.h`                  |
 
 `if_aireg.h` and `if_efreg.h` are the two ISA cards' host interfaces - the I/O
 register maps that `cosim/` emulates.  `ef(4)` is the one the co-simulation
 uses, because `ai(4)` cannot attach on a modern kernel; see
 `doc/cosimulation.md`.
+
+`mii.h` is the odd one out: it has nothing to do with the 82586, which predates
+MDIO by a decade.  It is here as the reference for `wb_mdio` and `mdio_prog`,
+which exist because an FPGA build has a PHY to set up whatever the drivers
+think - see "Why `mii.h` is the MDIO reference" below.
 
 ## Why this is the layout reference
 
@@ -65,3 +71,31 @@ command word - NetBSD resets in hardware.  It comes from the ROM header's
 
 `tb/cpp/tests/test_layout.cpp` checks our constants against the values in
 `i82586reg.h` so this cannot drift again.
+
+## Why `mii.h` is the MDIO reference
+
+The MDIO side has the same problem as the layout did, without the same escape.
+Nothing in `doc/drivers` touches a PHY, so there is no vintage driver to read:
+`wb_mdio` and `tb/cpp/mdio_phy.cpp` were both written from clause 22, by the
+same hand, at the same sitting.  Left alone they would only ever prove that
+the station and the model made the same mistakes.
+
+`mii.h` is the cheapest independent authority available.  It has driven every
+PHY NetBSD supports for twenty-odd years, so a wrong bit position in it would
+have been found long ago, and its `MII_COMMAND_*` values pin the frame itself -
+the start delimiter and the two opcodes - not just the register bits.  Note that
+`src/mdio_prog.sv` spells these bits with Linux's names (`BMCR_ANENABLE`) and
+`mii.h` does not (`BMCR_AUTOEN`); keep it that way, because a shared name is the
+easiest route for one mistake to reach both copies.
+
+`mdio_constants_match_the_reference` in `tb/cpp/tests/test_mdio.cpp` pins
+`tb/cpp/mii.h` to this file, and the programming-sequence tests pin
+`mdio_prog.sv` to `tb/cpp/mii.h`, so the RTL is tied to the reference through
+the testbench - the same two-step as the layout.
+
+What none of that reaches is the timing: which edge each side drives and
+samples, and where the station lets go of the wire for a read.  A model written
+alongside the station tolerates whatever the station does.
+`mdio_write_frame_matches_the_standard` and its read counterpart compare the
+MDIO pin against a frame written out bit by bit instead, which is why they exist
+as well.
