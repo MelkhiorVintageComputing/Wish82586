@@ -252,6 +252,15 @@ byte offsets, so the word address is the offset over four:
 | `0x10` | `DIV`    | MDC divider: MDC = clk / (2 * (DIV + 1))                  |
 | `0x14` | `ID`     | `0x4d444a4f`                                              |
 
+The station changes MDIO on the falling edge of MDC, and for a read it takes its
+bit at the *end* of the low period, immediately before driving MDC high.  Both
+follow from a PHY being allowed 300 ns after a rising edge to answer: the bit an
+edge clocks in is the one that has been on the wire throughout the low period
+before it, so sampling anywhere after the edge is sampling while the PHY may
+still be changing.  `doc/drivers/NetBSD/README.md` has the bit-time numbering
+this comes from, and the two cancelling off-by-ones that were found by checking
+it against a station from outside this project.
+
 `mdio_prog` is a Wishbone master that drives those registers.  After reset it
 resets the PHY, waits for the reset bit to clear, advertises exactly the one
 ability it was parameterised for, restarts auto-negotiation and raises

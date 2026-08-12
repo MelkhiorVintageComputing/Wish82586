@@ -196,6 +196,15 @@ internally via `Sim::run_until` until the transaction completes or a timeout
 expires, so tests read like driver code.  Never call one from inside a clock
 callback.
 
+`netbsd_station` is the exception to "the testbench is written here": it compiles
+`doc/drivers/NetBSD/mii_bitbang.c` unmodified, against the five cut-down kernel
+headers in `tb/cpp/netbsd/`, and points it at `mdio_phy` so the MDIO frames the
+model is checked against come from outside.  That include path is for that one C
+file and nothing else may reach into it.  It earned its place immediately: the
+station and the model had cancelling off-by-ones in the read turnaround and
+every test passed anyway - see `doc/drivers/NetBSD/README.md`.  If you touch the
+MDIO read path, those `infra_` tests are what says whether you are right.
+
 Layered as: `eth` (frames, FCS) -> `wb` (bus models) and `mii_phy` (PHY model)
 -> `i82586` (shared memory image: SCP/ISCP/SCB, command blocks, descriptor
 rings) -> `ie_driver` (the sequences from `if_ie.c`) -> `env` (per-test

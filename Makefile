@@ -60,6 +60,19 @@ TB_SV     := $(TB_SV_DIR)/tb_top.sv
 CPP_SRCS  := $(wildcard $(TB_CPP)/*.cpp) $(wildcard $(TB_CPP)/tests/*.cpp)
 CPP_HDRS  := $(wildcard $(TB_CPP)/*.h)
 
+# NetBSD's MDIO station, linked in unmodified so the frames the PHY model is
+# checked against come from somewhere other than here - see
+# tb/cpp/netbsd_station.h.  It is C, and it is compiled against the cut-down
+# kernel headers in tb/cpp/netbsd/ rather than the real ones, so it gets its own
+# rule and that include path reaches nothing else.  Nothing in it depends on
+# PHY_DATA_W, so one object serves both builds.
+NETBSD_C     := doc/drivers/NetBSD/mii_bitbang.c
+NETBSD_OBJ   := $(BUILD)/mii_bitbang.o
+NETBSD_HDRS  := $(wildcard $(TB_CPP)/netbsd/*/*.h) \
+                $(wildcard $(TB_CPP)/netbsd/*/*/*.h) \
+                doc/drivers/NetBSD/mii.h doc/drivers/NetBSD/mii_bitbang.h
+NETBSD_CFLAGS := -I$(TB_CPP)/netbsd -Idoc/drivers -O2 -Wall -fPIC
+
 # Tests to run, empty means all.  Pass extra runner flags in FLAGS.
 T     ?=
 FLAGS ?=
@@ -75,9 +88,14 @@ VFLAGS := --cc --exe --build --trace -Wall \
 
 all: $(BIN)
 
-$(BIN): $(RTL) $(TB_SV) $(CPP_SRCS) $(CPP_HDRS) Makefile
+$(NETBSD_OBJ): $(NETBSD_C) $(NETBSD_HDRS) Makefile
 	@mkdir -p $(BUILD)
-	$(VERILATOR) $(VFLAGS) $(RTL) $(TB_SV) $(addprefix $(CURDIR)/,$(CPP_SRCS))
+	$(CC) $(NETBSD_CFLAGS) -c -o $@ $(NETBSD_C)
+
+$(BIN): $(RTL) $(TB_SV) $(CPP_SRCS) $(CPP_HDRS) $(NETBSD_OBJ) Makefile
+	@mkdir -p $(BUILD)
+	$(VERILATOR) $(VFLAGS) $(RTL) $(TB_SV) $(addprefix $(CURDIR)/,$(CPP_SRCS)) \
+	    $(CURDIR)/$(NETBSD_OBJ)
 
 test: $(BIN)
 	$(BIN) $(FLAGS) $(T)

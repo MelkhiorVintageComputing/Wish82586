@@ -45,9 +45,22 @@ void MdioPhy::on_falling() {
 }
 
 void MdioPhy::on_rising(bool bit) {
-  // The reply steps once per slot from the first data bit onwards; while
-  // the turnaround is still going out it holds at the zero.
-  if (driving_ && st_ == St::Data && out_bit_ > 0) out_bit_--;
+  // The reply steps once per bit time for as long as we are driving, including
+  // the step out of the turnaround.
+  //
+  // A read frame is 64 bit times and bit time N ends at rising edge N, so the
+  // data is bit times 49 to 64 and the zero the PHY owes on the turnaround is
+  // bit time 48.  A PHY drives between 0 and 300 ns after a rising edge, which
+  // means it puts bit time N on the wire just after edge N-1: the turnaround
+  // zero just after edge 47, and the first data bit just after edge 48.  So the
+  // step has to happen on the second turnaround edge as well as on the data
+  // ones, which is why there is no state test here.
+  //
+  // Holding the zero for the whole turnaround instead - the obvious reading,
+  // and what this did first - puts every data bit one bit time late.  Our own
+  // station read it anyway, because it was sampling a bit time late to match;
+  // NetBSD's would not, which is how it was found.
+  if (driving_ && out_bit_ > 0) out_bit_--;
 
   switch (st_) {
     case St::Preamble:

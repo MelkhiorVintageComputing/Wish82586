@@ -145,6 +145,18 @@ module wb_mdio #(
   wire falling = tick && !mdc;   // mdc has just gone low
   wire rising  = tick && mdc;    // mdc has just gone high
 
+  // The last system clock before MDC goes low to high, which is where a read
+  // has to take its bit.  A PHY drives its answer between 0 and 300 ns after a
+  // rising edge and holds it until the next one, so the bit an edge clocks in
+  // is the one that has been sitting on the wire through the low period before
+  // it - not whatever is there a cycle after the edge, which at 50 MHz is 20 ns
+  // into the window where the PHY is entitled to be changing it.
+  //
+  // Sampling after the edge worked against a model that changed its output at
+  // the same moment, and against nothing else; NetBSD's station reads a bit
+  // time earlier than that and got every value shifted by one.
+  wire sample  = (div_cnt == divisor) && !mdc;
+
   // ---- the frame ----------------------------------------------------------
   // Bit 63 goes out first: 32 ones, 01, the opcode, addresses, turnaround,
   // then the data.
@@ -199,8 +211,8 @@ module wb_mdio #(
           mdio_oe <= !(is_read && (in_ta || in_data));
           shifter <= {shifter[62:0], 1'b0};
         end
+        if (sample && is_read && in_data) rdata <= {rdata[14:0], mdio_i};
         if (rising) begin
-          if (is_read && in_data) rdata <= {rdata[14:0], mdio_i};
           if (bits_left == 7'd1) begin
             active  <= 1'b0;
             mdio_oe <= 1'b0;

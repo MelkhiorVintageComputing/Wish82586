@@ -99,3 +99,39 @@ alongside the station tolerates whatever the station does.
 `mdio_write_frame_matches_the_standard` and its read counterpart compare the
 MDIO pin against a frame written out bit by bit instead, which is why they exist
 as well.
+
+## `mii_bitbang.c`, and the two bugs it found
+
+`mii_bitbang.c` goes further: it is compiled into the testbench unmodified and
+pointed at `tb/cpp/mdio_phy.cpp`, so the model is asked to answer frames from
+code nobody here wrote.  `tb/cpp/netbsd_station.h` is the wiring and
+`tb/cpp/netbsd/` is the five cut-down kernel headers it needs; the tests are the
+`infra_` ones in `tb/cpp/tests/test_netbsd_station.cpp`, because no RTL is
+involved - it is one model driving another.
+
+It disagreed on the first run, and both sides of the disagreement were wrong.
+
+Count rising edges.  A read frame is 64 bit times and bit time N ends at edge N,
+so the fields are preamble 1-32, start 33-34, opcode 35-36, PHY address 37-41,
+register address 42-46, turnaround 47-48, data 49-64.  A PHY drives its answer
+between 0 and 300 ns *after* a rising edge and holds it until the next one, so
+it presents bit time N in the interval after edge N-1: the zero it owes on the
+turnaround just after edge 47, and the first data bit just after edge 48.
+NetBSD sends exactly 64 edges and samples in the low period before each, which
+is that reading exactly.
+
+* `mdio_phy.cpp` held the turnaround zero for both turnaround bit times, so
+  every data bit went out one bit time late.
+* `wb_mdio` took its bit one system clock *after* the rising edge - 20 ns in,
+  where a real PHY is still entitled to be changing it - which is one bit time
+  late in the same direction.
+
+So they agreed with each other and disagreed with the standard, and every read
+test passed.  Two mistakes cancelling is exactly what a testbench written beside
+its RTL is prone to, and it is why the frames now come from outside.
+
+The station now samples at the end of the MDC low period, where the bit has been
+stable since the PHY drove it, and the model steps its output on the second
+turnaround edge.  The fix in `wb_mdio` is held in place by
+`mdio_reads_come_back` through the model, and the model by these tests - undo
+either and the other's tests fail.
