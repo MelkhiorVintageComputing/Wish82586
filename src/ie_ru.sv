@@ -199,6 +199,12 @@ module ie_ru (
     end
   end
 
+  // The decision is made on the cycle the sixth byte arrives, so it has to
+  // include that byte rather than the register that is about to hold it.
+  wire [47:0] dst_next = (frame_len < 16'd6)
+                       ? (dst | (48'(word_data) << {frame_len[2:0], 3'b000}))
+                       : dst;
+
   logic mc_hit;
   always_comb begin
     mc_hit = 1'b0;
@@ -206,11 +212,6 @@ module ie_ru (
       if ((4'(i) < mc_n) && (dst_next == mc[i])) mc_hit = 1'b1;
   end
 
-  // The decision is made on the cycle the sixth byte arrives, so it has to
-  // include that byte rather than the register that is about to hold it.
-  wire [47:0] dst_next = (frame_len < 16'd6)
-                       ? (dst | (48'(word_data) << {frame_len[2:0], 3'b000}))
-                       : dst;
   wire is_broadcast = (dst_next == 48'hffff_ffff_ffff);
   wire is_multicast = dst_next[0];         // group bit of the first octet
   wire is_ours      = (dst_next == ia_addr_i);

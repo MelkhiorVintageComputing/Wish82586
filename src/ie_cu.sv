@@ -157,6 +157,10 @@ module ie_cu (
   logic [15:0] tx_status;      // the extra bits a transmit puts in its status
   logic        tx_done_s1, tx_done_s2;
 
+  // Read data comes back a full word wide; these blocks all want the
+  // 16-bit field that was addressed.
+  wire [15:0] rdata = bus_rdata_i[15:0];
+
   // Multicast setup.  The command gives a byte count, six bytes per address;
   // only as many as the receive unit can hold are fetched.
   logic [31:0] tx_word;        // the four bytes last read from a buffer
@@ -190,10 +194,6 @@ module ie_cu (
   wire [2:0] cfg_words_next = (cfg_count < 4'd2)   ? 3'd1 :
                               (cfg_count >= 4'd12) ? 3'd6 :
                               (cfg_count[3:1] + {2'b00, cfg_count[0]});
-
-  // Read data comes back a full word wide; these blocks all want the
-  // 16-bit field that was addressed.
-  wire [15:0] rdata = bus_rdata_i[15:0];
 
   // ---- request presented to the memory port -------------------------------
   always_comb begin
