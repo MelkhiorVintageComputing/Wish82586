@@ -101,6 +101,7 @@ module ie_ru (
     RU_READY,          // armed, waiting for a frame
     RU_POP,
     RU_FLUSH,          // push the part filled word out before moving on
+    RU_FULL_PEEK,      // full -- but is the frame over too?  look before closing
     RU_CLOSE_FULL,     // this buffer is full, close it and move on
     RU_RD_NEXT_RBD,
     RU_DROP,           // swallow the rest of a frame we are not keeping
@@ -316,7 +317,8 @@ module ie_ru (
   // speculatively: the read enable and the state machine use the same term.
   wire pop_stall = wp_valid && (last_lane || hdr_phase);
   wire pop_now   = (state == RU_POP) && !rx_empty_i && !pop_stall;
-  assign rx_rd_o = pop_now || ((state == RU_DROP) && !rx_empty_i);
+  assign rx_rd_o = pop_now || ((state == RU_DROP) && !rx_empty_i)
+                           || ((state == RU_FULL_PEEK) && !rx_empty_i && word_end);
 
   always_comb begin
     if (state == RU_NO_RESOURCE)                        rus_o = 3'd2;  // no resource
@@ -537,7 +539,37 @@ module ie_ru (
                 acc_sel  <= 4'h0;
                 acc      <= 32'h0;
               end else begin
-                state <= flush_to_end ? RU_FIN_CLOSE_RBD : RU_CLOSE_FULL;
+                state <= flush_to_end ? RU_FIN_CLOSE_RBD : RU_FULL_PEEK;
+              end
+            end
+
+          // The buffer is full.  That is not yet enough to know whether it is
+          // the last one: a frame whose length is exactly the buffer size ends
+          // on the same byte that fills it, and then this buffer is the end of
+          // the frame and must be closed with EOF.  Closing it as merely full
+          // costs an empty buffer and, worse, tells the driver the frame goes
+          // on.  A driver that sizes its buffers at exactly one maximum frame
+          // -- which is what SunOS's IE_BUFSZ is -- reads that as a frame too
+          // long to hold, prints "giant packet" and drops it, so every
+          // full-length frame is lost while everything shorter arrives.
+          //
+          // The receive FIFO shows its head without popping, so the answer is
+          // one look: an end-of-frame marker means close with EOF, anything
+          // else means the frame really does continue and the next buffer is
+          // needed.  An end marker is taken as it is dealt with, the way every
+          // other state takes what it handles; a data byte is left where it is
+          // and picked up once the next descriptor is open.
+          RU_FULL_PEEK:
+            if (!rx_empty_i) begin
+              if (word_end) begin
+                err_bad     <= word_err[2];
+                err_dribble <= word_err[1];
+                err_overrun <= word_err[0];
+                err_short   <= frame_is_short;
+                in_frame    <= 1'b0;
+                state       <= RU_FIN_CLOSE_RBD;
+              end else begin
+                state <= RU_CLOSE_FULL;
               end
             end
 

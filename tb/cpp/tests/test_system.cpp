@@ -311,6 +311,46 @@ TEST(sys_receive_chains_buffers) {
   CHECK_EQ(rx[0].data, f.payload);
 }
 
+TEST(sys_receive_frame_that_exactly_fills_a_buffer) {
+  // A driver sizes its receive buffers for one maximum frame and no more --
+  // SunOS uses IE_BUFSZ, which is ETHERMTU or the header plus it depending on
+  // where the header lands -- so a full-length frame ends on the very last
+  // byte of the buffer.  That buffer is then both full and the end of the
+  // frame, and EOF is what tells the driver which.  sys/sunif/if_ie.c reads a
+  // buffer closed without EOF as "length > IE_BUFSZ", prints "giant packet"
+  // and drops the frame; NFS, whose replies are all full-length, then stalls
+  // while everything smaller works.
+  env.img().build_init_structures();
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  CHECK_DRV(env.drv().configure(ie::Config()));
+
+  // The header lands in the buffer, not the descriptor, so an exact fit is
+  // the whole frame: fourteen bytes of header and the payload behind it.
+  const size_t payload = 512;
+  const size_t frame   = 14 + payload;
+  env.img().build_rfa(2, 4, frame);          // exactly one frame per buffer
+  CHECK_DRV(env.drv().ru_start());
+
+  EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(payload, 37));
+  env.phy().inject(f);
+  CHECK_DRV(env.drv().wait_rx(1));
+
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_EQ(rx[0].data, f.payload);
+
+  const uint16_t rbd = env.mem().rd16(env.img().addr_of(rx[0].rfd_off) + 6);
+  const uint16_t cnt = env.mem().rd16(env.img().addr_of(rbd) + 0);
+  CHECK_MSG(cnt & ie::RBD_EOF,
+            "the buffer was closed without EOF, which a driver reads as a giant packet");
+  CHECK_EQ(size_t(cnt & ie::RBD_COUNT_MASK), frame);
+  CHECK_MSG(env.mem().rd16(env.img().addr_of(rbd) + 2) == ie::NULL_PTR ||
+            !(env.mem().rd16(env.img().addr_of(env.mem().rd16(env.img().addr_of(rbd) + 2)) + 0)
+              & ie::RBD_F),
+            "a second buffer was consumed for a frame that fitted in one");
+}
+
 TEST(sys_receive_back_to_back) {
   bring_up(env);
 
