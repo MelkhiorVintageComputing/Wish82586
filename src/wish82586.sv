@@ -146,6 +146,52 @@ module wish82586 #(
   logic [11:0] lb_wdata, lb_rdata;
   logic [6:0]  lb_level;   // observation only
 
+  // ---- reset, per clock domain --------------------------------------------
+  // rst arrives synchronous to clk, and the PHY clocks are unrelated to it.
+  // Feeding it straight into mii_rx, mii_tx and the receive FIFO's write side
+  // -- which is what this used to do -- has two consequences on real silicon.
+  //
+  // A reset shorter than one PHY clock period is missed entirely by those
+  // domains while everything on clk resets: at 10 Mb/s an mii_rx_clk period is
+  // 400 ns, and a reset released synchronously to a 12.5 MHz clk can easily be
+  // shorter than that.  The receive FIFO then keeps its write pointer while its
+  // read pointer is zeroed, so it is neither empty nor coherent, and the first
+  // thing the receive unit does afterwards is file a frame of noise into the
+  // host's descriptor ring.  And each of the forty-odd registers in those
+  // domains samples the reset independently, so an asynchronous edge can leave
+  // some in reset and some not.
+  //
+  // core_rst_i -- the Sun-2's RESET* bit, which its driver asserts on every
+  // ieinit -- did not reach those domains at all.  Resetting the chip during a
+  // frame therefore left the half-received tail in the FIFO for the next frame
+  // to inherit, and left mii_tx driving tx_en at a PHY that had been told the
+  // chip was in reset.
+  //
+  // Async assert, synchronous release, one per PHY clock, so each domain sees a
+  // reset at least three of its own cycles long however short the request was.
+  //
+  // The linter sees one net used as an asynchronous reset here and as an
+  // ordinary synchronous one in the clk domain below, and says so.  That is
+  // the arrangement on purpose: core_rst is generated on clk, so in that
+  // domain it is synchronous by construction, and it is only asynchronous
+  // where it crosses into a PHY clock - which is what these two synchronisers
+  // are for.
+  // verilator lint_off SYNCASYNCNET
+  wire core_rst = rst | core_rst_i;
+  // verilator lint_on SYNCASYNCNET
+
+  (* ASYNC_REG = "TRUE" *) logic [2:0] rx_rst_q;
+  always_ff @(posedge mii_rx_clk or posedge core_rst)
+    if (core_rst) rx_rst_q <= 3'b111;
+    else          rx_rst_q <= {rx_rst_q[1:0], 1'b0};
+  wire rx_rst = rx_rst_q[2];
+
+  (* ASYNC_REG = "TRUE" *) logic [2:0] tx_rst_q;
+  always_ff @(posedge mii_tx_clk or posedge core_rst)
+    if (core_rst) tx_rst_q <= 3'b111;
+    else          tx_rst_q <= {tx_rst_q[1:0], 1'b0};
+  wire tx_rst = tx_rst_q[2];
+
   ie_core u_core (
       .clk          (clk),
       .rst          (rst),
@@ -234,7 +280,7 @@ module wish82586 #(
   // on the system clock.
   mii_rx #(.DATA_W(PHY_DATA_W)) u_mii_rx (
       .rx_clk       (mii_rx_clk),
-      .rst          (rst),
+      .rst          (rx_rst),
       .rxd          (mii_rxd),
       .rx_dv        (mii_rx_dv),
       .rx_er        (mii_rx_er),
@@ -251,12 +297,12 @@ module wish82586 #(
   // gigabit with small buffers those pauses are what decide it.
   async_fifo #(.WIDTH(12), .DEPTH(256)) u_rx_fifo (
       .wclk    (mii_rx_clk),
-      .wrst    (rst),
+      .wrst    (rx_rst),
       .wr_en   (rxf_wr),
       .wr_data (rxf_wdata),
       .wfull   (rxf_full),
       .rclk    (clk),
-      .rrst    (rst),
+      .rrst    (core_rst),
       .rd_en   (rxf_rd),
       .rd_data (rxf_rdata),
       .rempty  (rxf_empty)
@@ -264,7 +310,7 @@ module wish82586 #(
 
   sync_fifo #(.WIDTH(12), .DEPTH(64)) u_lb_fifo (
       .clk     (clk),
-      .rst     (rst),
+      .rst     (core_rst),
       .flush   (1'b0),
       .wr_en   (lb_wr),
       .wr_data (lb_wdata),
@@ -399,7 +445,7 @@ module wish82586 #(
 
   mii_tx #(.DATA_W(PHY_DATA_W)) u_mii_tx (
       .tx_clk        (mii_tx_clk),
-      .rst           (rst),
+      .rst           (tx_rst),
       .go_i          (tx_go),
       .len_i         (tx_len),
       .done_o        (tx_done),

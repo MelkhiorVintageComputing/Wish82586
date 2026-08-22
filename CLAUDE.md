@@ -250,6 +250,18 @@ RTL: SystemVerilog, `always_ff`/`always_comb`, synchronous active-high reset
 (Wishbone `RST_I`), two-space indent, ports one per line with the direction
 aligned, `_i`/`_o` suffixes on bus ports.
 
+The one exception to the synchronous reset is the pair of reset synchronisers
+at the top of `wish82586.sv`.  `rst` and `core_rst_i` are generated on `clk`,
+and the PHY clocks are unrelated to it, so a reset shorter than one PHY clock
+period would be missed by `mii_rx`, `mii_tx` and the receive FIFO's write side
+entirely.  Those two are async assert, synchronous release - the standard
+shape - and they are the only `always_ff` in `src/` with a reset in the
+sensitivity list.  Everything downstream of them, inside the PHY-domain
+blocks, is synchronous as usual.  Verilator's `SYNCASYNCNET` warning on
+`core_rst` is expected and suppressed there with a narrow pragma: the net is
+synchronous in the domain that makes it and asynchronous only where it
+crosses, which is what the synchronisers are for.
+
 C++: C++14, two-space indent, `namespace wtb`, models own their signal pointers
 through a small ports struct rather than including the Verilated header.
 
