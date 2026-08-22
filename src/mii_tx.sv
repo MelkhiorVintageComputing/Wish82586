@@ -77,6 +77,10 @@ module mii_tx #(
   initial begin
     if (DATA_W != 4 && DATA_W != 8)
       $fatal(1, "mii_tx: DATA_W must be 4 (MII) or 8 (GMII)");
+    // The counter is 24 bits; a limit that does not fit would be truncated
+    // silently into something far shorter than asked for.
+    if (DEFER_LIMIT < 0 || DEFER_LIMIT > (1 << 24) - 1)
+      $fatal(1, "mii_tx: DEFER_LIMIT must fit in 24 bits");
   end
 
   // Symbols per byte, and how many bit times one symbol is worth.

@@ -16,7 +16,8 @@
 module wish82586_wb #(
     parameter int PHY_DATA_W = 4,    // 4 = MII, 8 = GMII
     parameter int WB_DATA_W = 32,
-    parameter int WB_ADDR_W = 30
+    parameter int WB_ADDR_W = 30,
+    parameter int DEFER_LIMIT = 1 << 16   // see wish82586
 ) (
     input  logic                   clk,
     input  logic                   rst,
@@ -90,9 +91,10 @@ module wish82586_wb #(
   );
 
   wish82586 #(
-      .PHY_DATA_W (PHY_DATA_W),
-      .WB_DATA_W  (WB_DATA_W),
-      .WB_ADDR_W  (WB_ADDR_W)
+      .PHY_DATA_W  (PHY_DATA_W),
+      .WB_DATA_W   (WB_DATA_W),
+      .WB_ADDR_W   (WB_ADDR_W),
+      .DEFER_LIMIT (DEFER_LIMIT)
   ) u_mac (
       .clk        (clk),
       .rst        (rst),

@@ -248,11 +248,18 @@ One departure from the real part: deferral is bounded.  A real 82586 waits for
 a quiet medium for ever, and a PHY that holds CRS asserted - out of reset, with
 no link, or with the pin on a pull-up - therefore hangs the machine, with the
 driver waiting on a done bit that never arrives.  `mii_tx` gives up after
-`DEFER_LIMIT` symbol times of *continuous* carrier (default 65536, 26 ms at the
-2.5 MHz clock of a 10 Mb/s link) and reports the frame as excessive collisions,
-which is a status the drivers already act on.  The counter is cleared the
-moment carrier drops, so ordinary traffic never approaches it; a
-`DEFER_LIMIT` of zero restores the real part's behaviour.
+`DEFER_LIMIT` symbol times of *continuous* carrier and reports the frame as
+excessive collisions, which is a status the drivers already act on.  The
+counter is cleared the moment carrier drops, so ordinary traffic never
+approaches it.
+
+`DEFER_LIMIT` is an elaboration parameter on `wish82586` and on
+`wish82586_wb`, alongside `PHY_DATA_W`.  It defaults to 65536 symbol times -
+26 ms at the 2.5 MHz clock of a 10 Mb/s link, and twenty times the longest
+carrier a conforming station can produce - and must fit in 24 bits.  Zero
+restores the real part's behaviour of deferring for ever, which is the right
+setting for a machine whose PHY is known good and whose driver has a timeout
+of its own.
 
 ## MDIO
 

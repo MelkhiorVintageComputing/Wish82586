@@ -29,7 +29,11 @@ module wish82586 #(
     // GTX_CLK from the same place.
     parameter int PHY_DATA_W = 4,
     parameter int WB_DATA_W = 32,   // fixed at 32, see doc/interface.md
-    parameter int WB_ADDR_W = 30   // word address lines, see doc/interface.md
+    parameter int WB_ADDR_W = 30,  // word address lines, see doc/interface.md
+    // How long transmit will defer to a carrier that never goes away, in
+    // symbol times.  Zero restores the real part's behaviour, which is to
+    // defer for ever; see mii_tx for why the default is not that.
+    parameter int DEFER_LIMIT = 1 << 16
 ) (
     input  logic                   clk,
     input  logic                   rst,          // Wishbone RST_I: synchronous, active high
@@ -443,7 +447,10 @@ module wish82586 #(
       .rd_data (tx_ram_rdata)
   );
 
-  mii_tx #(.DATA_W(PHY_DATA_W)) u_mii_tx (
+  mii_tx #(
+      .DATA_W      (PHY_DATA_W),
+      .DEFER_LIMIT (DEFER_LIMIT)
+  ) u_mii_tx (
       .tx_clk        (mii_tx_clk),
       .rst           (tx_rst),
       .go_i          (tx_go),
