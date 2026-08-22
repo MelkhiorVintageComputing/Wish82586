@@ -55,6 +55,17 @@ MII brings its own clocks (`mii_tx_clk`, `mii_rx_clk`, 25 MHz at 100 Mb/s).
 They are asynchronous to `clk` and to each other; the testbench deliberately
 skews them so the design cannot assume otherwise.
 
+Both `rst` and `core_rst_i` are generated on `clk`, so `wish82586` stretches
+them into each PHY clock through a reset synchroniser before they reach
+`mii_rx`, `mii_tx` and the receive FIFO's write side.  Two consequences are
+worth knowing about from outside.  A reset request may be as short as a single
+`clk` cycle and will still be seen by the PHY domains, each of which holds it
+for at least three of its own cycles.  And `core_rst_i` - the chip's RESET
+pin, which the Sun-2 driver asserts on every `ieinit` - resets the receive
+front end as well as the units, so a frame in flight when it is asserted
+leaves nothing behind: the FIFO is empty when the chip comes back, rather than
+holding the tail of the aborted frame for the next one to inherit.
+
 ## Addressing
 
 Wishbone is word addressed.  `ADR` carries the index of a data-bus-wide word,

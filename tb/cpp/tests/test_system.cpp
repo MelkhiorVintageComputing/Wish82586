@@ -390,6 +390,76 @@ TEST(sys_receive_frame_that_exactly_fills_a_buffer) {
             "a second buffer was consumed for a frame that fitted in one");
 }
 
+// Resetting the chip in the middle of a frame.  The Sun-2 driver asserts the
+// RESET* bit on every ieinit and does not wait for the wire to be quiet first,
+// so this is the ordinary case, not an exotic one.
+//
+// core_rst_i reaches ie_core, ie_cu and ie_ru, but until the reset
+// synchronisers went in it did not reach mii_rx or the receive FIFO at all.
+// The receive unit therefore restarted while the front end carried on filling
+// the FIFO with the rest of the frame, and the first thing the restarted unit
+// did was file that tail into the host's descriptor ring as a frame of its own.
+//
+// The pin is pulsed one system clock wide here, which at 20 ns is shorter than
+// the 40 ns MII clock period - the other half of what the synchronisers are
+// for, since a pulse that short is invisible to a PHY-domain register that
+// samples it directly.
+//
+// Promiscuous mode is what makes the failure visible rather than merely
+// probable: the tail begins at an arbitrary offset into the payload, so
+// address filtering would usually throw it away and the bug would show up only
+// on the frames whose payload happened to look like our own address.
+TEST(sys_reset_during_a_frame_leaves_nothing_behind) {
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  ie::Config cfg;
+  cfg.promiscuous     = true;
+  cfg.save_bad_frames = true;
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  // Long enough that the part left after the reset is still a full-sized frame
+  // and cannot be dismissed as a runt.
+  EthFrame f(env.local_mac(), env.peer_mac(), 0x0800, random_payload(1000, 43));
+  env.phy().inject(f);
+
+  CHECK_MSG(env.sim().run_until([&]() { return env.dut()->dut_mii_rx_dv != 0; },
+                                1 * MS),
+            "the frame never reached the receive pins");
+  // A hundred bytes or so into it, so the receive unit has taken some of the
+  // frame and the front end still has most of it to come.
+  env.sim().run_ps(200 * env.phy().nibble_time_ps());
+
+  env.dut()->dut_core_rst_i = 1;
+  env.tick(1);
+  env.dut()->dut_core_rst_i = 0;
+
+  CHECK_MSG(env.sim().run_until([&]() { return !env.phy().rx_busy(); }, 1 * MS),
+            "the rest of the frame never finished");
+
+  // Now the driver brings the chip up again, which is what ieinit does next.
+  CHECK_DRV(env.drv().init());
+  CHECK_DRV(env.drv().ia_setup(env.local_mac()));
+  CHECK_DRV(env.drv().configure(cfg));
+  env.img().build_rfa(4, 8, 512);
+  CHECK_DRV(env.drv().ru_start());
+
+  env.sim().run_ps(100 * US);
+  std::vector<ie::RxFrame> rx = env.img().collect_rx();
+  CHECK_MSG(rx.empty(),
+            "the tail of the interrupted frame was filed as a frame of its own");
+
+  // And the receive path still works, so the reset cleared the front end
+  // without leaving it stuck.
+  EthFrame g(env.local_mac(), env.peer_mac(), 0x0800, random_payload(200, 44));
+  env.phy().inject(g);
+  CHECK_DRV(env.drv().wait_rx(1));
+  rx = env.img().collect_rx();
+  CHECK_EQ(rx.size(), size_t(1));
+  CHECK_EQ(rx[0].data, g.payload);
+}
+
 TEST(sys_receive_back_to_back) {
   bring_up(env);
 
