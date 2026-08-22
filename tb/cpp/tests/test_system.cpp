@@ -239,6 +239,45 @@ TEST(sys_transmit_retries_after_collision) {
   CHECK_MSG(env.phy().tx_count() >= 2, "the frame was not retransmitted");
 }
 
+// A PHY that holds CRS asserted with nothing on the wire - out of reset, with
+// no link, or with the pin on a pull-up, which is how a QMTech Wukong arrives -
+// used to stop the machine dead.  The real 82586 defers forever and the drivers
+// wait on the command block's done bit with no timeout of their own, so there
+// was nothing printed and no bus error to show for it.  mii_tx gives up after
+// DEFER_LIMIT symbol times of continuous carrier instead and reports the frame
+// the way an unusable medium is normally reported.
+//
+// This is the only test that runs into the millisecond range: the limit is
+// 65536 symbol times, 2.6 ms at the 25 MHz transmit clock of a 100 Mb/s link.
+// Waiting it out is the point - a shorter limit would not prove the frame ends
+// rather than merely stalls.
+TEST(sys_transmit_gives_up_on_a_medium_that_never_goes_quiet) {
+  bring_up(env);
+  env.phy().set_full_duplex(false);
+  env.phy().set_stuck_carrier(true);
+
+  EthFrame f(env.peer_mac(), env.local_mac(), 0x0800, random_payload(64, 41));
+  uint16_t cb = 0;
+  CHECK_MSG(env.drv().transmit(f, &cb),
+            "the transmit command never completed: the chip is deferring for ever");
+
+  const uint16_t st = env.img().cb_status(cb);
+  CHECK_MSG(!(st & ie::CB_ST_OK), "a frame that never reached the wire was called OK");
+  CHECK_MSG(st & ie::TX_ST_XCOLL,
+            "giving up was not reported as the medium being unusable");
+  CHECK_MSG(st & ie::TX_ST_DEFER, "the deferral itself was not reported");
+  CHECK_MSG(env.phy().tx_count() == 0,
+            "something was put on the wire while carrier was asserted");
+
+  // And the chip is not wedged: once the carrier goes away the next frame goes
+  // out normally, which is what a driver retrying after the error needs.
+  env.phy().set_stuck_carrier(false);
+  CHECK_DRV(env.drv().transmit(f));
+  CHECK_MSG(env.sim().run_until([&]() { return env.phy().tx_count() >= 1; }, 1 * MS),
+            "nothing came out once the medium went quiet again");
+  CHECK_EQ(env.phy().pop_tx().data, f.to_wire(true, true));
+}
+
 // ---------------------------------------------------------------------------
 // Receive
 // ---------------------------------------------------------------------------

@@ -183,8 +183,9 @@ void MiiPhy::rx_tick() {
   }
 
   // Carrier sense follows receive activity, plus our own transmission when
-  // the medium is half duplex.
-  *p_.crs = (rx_active_ || (!full_duplex_ && tx_active_)) ? 1 : 0;
+  // the medium is half duplex, plus whatever a test has jammed on.
+  *p_.crs = (rx_active_ || stuck_carrier_ || (!full_duplex_ && tx_active_))
+                ? 1 : 0;
 
   // A collision is receive and transmit overlapping, or one forced by a test.
   bool col = !full_duplex_ && rx_active_ && tx_active_;

@@ -114,6 +114,10 @@ class MiiPhy {
   void force_collision(int nibbles_after_start) { col_at_ = nibbles_after_start; }
   void set_collision_length(int nibbles) { col_len_ = nibbles; }
   int collisions() const { return collisions_; }
+  // Hold CRS asserted regardless of traffic.  A PHY out of reset, with no
+  // link, or with CRS wired to a pull-up does this, and it is the one thing
+  // no amount of injected traffic can reproduce: real carrier always ends.
+  void set_stuck_carrier(bool on) { stuck_carrier_ = on; }
 
  private:
   void rx_tick();
@@ -146,6 +150,7 @@ class MiiPhy {
 
   // half duplex
   bool full_duplex_ = false;
+  bool stuck_carrier_ = false;
   int col_at_ = -1;
   int col_len_ = 8;
   int col_cnt_ = 0;

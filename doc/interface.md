@@ -233,6 +233,16 @@ the `0xD5` start frame delimiter.  The FCS is appended least significant byte
 first.  Half duplex behaviour (deferral on CRS, backoff on COL) is driven from
 the CONFIGURE command parameters.
 
+One departure from the real part: deferral is bounded.  A real 82586 waits for
+a quiet medium for ever, and a PHY that holds CRS asserted - out of reset, with
+no link, or with the pin on a pull-up - therefore hangs the machine, with the
+driver waiting on a done bit that never arrives.  `mii_tx` gives up after
+`DEFER_LIMIT` symbol times of *continuous* carrier (default 65536, 26 ms at the
+2.5 MHz clock of a 10 Mb/s link) and reports the frame as excessive collisions,
+which is a status the drivers already act on.  The counter is cleared the
+moment carrier drops, so ordinary traffic never approaches it; a
+`DEFER_LIMIT` of zero restores the real part's behaviour.
+
 ## MDIO
 
 PHY management is a separate pair of blocks rather than part of the MAC,
